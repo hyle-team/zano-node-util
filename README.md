@@ -1,2 +1,7 @@
-# Zano-node-util
-Zano tools for building pools and other stuff 
+Node-Cryptonote-Util
+====================
+
+Dependencies
+------------
+
+* Boost (http://www.boost.org/)

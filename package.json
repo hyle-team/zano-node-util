@@ -1,0 +1,22 @@
+{
+    "name": "cryptonote-util",
+    "version": "0.0.1",
+    "main": "cryptonote",
+    "author": {
+        "name": "LucasJones, CryptoZoidberg",
+        "email": "lucasjonesdev@hotmail.co.uk, crypto.zoidberg@gmail.com"
+    },
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/hyle-team/zano-node-util.gitt"
+    },
+    "dependencies" : {
+        "bindings" : "*",
+        "nan" : "^2.0.0"
+    },
+    "keywords": [
+        "cryptonight",
+        "cryptonote",
+        "zano"
+    ]
+}
