@@ -1,4 +1,4 @@
-Node-Cryptonote-Util
+Zano-Node-Util
 ====================
 
 Dependencies
