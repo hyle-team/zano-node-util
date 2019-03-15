@@ -26,9 +26,9 @@
 
 
 #pragma once
-//extern "C" { 
-//#include "zlib/zlib.h"
-//}
+extern "C" { 
+#include "zlib/zlib.h"
+}
 
 namespace epee 
 {
@@ -36,7 +36,6 @@ namespace zlib_helper
 {
 	inline 	bool pack(const std::string& target, std::string& result_packed_buff)
 {
-	/*
 		result_packed_buff.clear();
 
 		z_stream    zstream = {0};
@@ -63,7 +62,6 @@ namespace zlib_helper
 		}
 
 		deflateEnd(& zstream );
-		*/
 		return true;
 	}
 
@@ -78,7 +76,6 @@ namespace zlib_helper
 
 	inline bool unpack(const std::string& target, std::string& decode_summary_buff)
 	{
-		/*
 		z_stream    zstream = {0};
 		int ret = inflateInit(&zstream);//
 
@@ -139,7 +136,7 @@ namespace zlib_helper
 
 		inflateEnd(&zstream );
 
-		*/
+		
 		return true;
 	}
 

@@ -25,7 +25,11 @@
       "link_settings": {
         "libraries": [
           "-lboost_system",
-          "-lboost_date_time"
+          "-lboost_date_time",
+          "-lboost_thread",
+          "-lboost_serialization",
+          "-lboost_iostreams",
+          "-lboost_locale",
         ]
       },
       "cflags_cc!": [
