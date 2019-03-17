@@ -38,7 +38,37 @@ blobdata uint64be_to_blob(uint64_t num) {
     return res;
 }
 
+void construct_block_blob(const Nan::FunctionCallbackInfo<v8::Value>& info) {
 
+    if (info.Length() < 2)
+        return THROW_ERROR_EXCEPTION("You must provide two arguments.");
+
+    Local<Object> block_template_buf = info[0]->ToObject();
+    Local<Object> nonce_buf = info[1]->ToObject();
+
+    if (!Buffer::HasInstance(block_template_buf) || !Buffer::HasInstance(nonce_buf))
+        return THROW_ERROR_EXCEPTION("Both arguments should be buffer objects.");
+
+    if (Buffer::Length(nonce_buf) != 4)
+        return THROW_ERROR_EXCEPTION("Nonce buffer has invalid size.");
+
+    uint32_t nonce = *reinterpret_cast<uint32_t*>(Buffer::Data(nonce_buf));
+
+    blobdata block_template_blob = std::string(Buffer::Data(block_template_buf), Buffer::Length(block_template_buf));
+    blobdata output = "";
+
+    block b = AUTO_VAL_INIT(b);
+    if (!parse_and_validate_block_from_blob(block_template_blob, b))
+        return THROW_ERROR_EXCEPTION("Failed to parse block");
+    b.nonce = nonce;
+    if (!block_to_blob(b, output))
+        return THROW_ERROR_EXCEPTION("Failed to convert block to blob");
+
+    v8::Local<v8::Value> returnValue = Nan::CopyBuffer((char*)output.data(), output.size()).ToLocalChecked();
+    info.GetReturnValue().Set(
+        returnValue
+    );
+}
 
 NAN_METHOD(convert_blob) {
 
@@ -181,13 +211,44 @@ void get_id_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
     SET_BUFFER_RETURN(output, 32);
 }
 
+NAN_METHOD(generate_scratchpad) {
+    if (info.Length() != 2)
+        return THROW_ERROR_EXCEPTION("You must provide two arguments.");
 
+    Local<Object> seed = info[0]->ToObject();
+
+    if(!Buffer::HasInstance(seed))
+        return THROW_ERROR_EXCEPTION("Argument 1 should be a buffer object.");
+
+    char * s = Buffer::Data(seed);
+
+    if(!info[1]->IsInt32())
+        return THROW_ERROR_EXCEPTION("Argument 2 should be an int32");
+    int height = info[1]->IntegerValue();
+
+    uint64_t result_len = get_scratchpad_size_for_height(height);
+
+    char *output = (char *) malloc((size_t) result_len);
+
+    crypto::hash sh = *(crypto::hash*) s;
+    std::vector<crypto::hash> result;
+    crypto::generate_scratchpad(sh, result, result_len);
+
+    v8::Local<v8::Value> returnValue = Nan::CopyBuffer((char *) result.data(), result_len).ToLocalChecked();
+    info.GetReturnValue().Set(
+        returnValue
+    );
+
+    free(output);
+}
 
 NAN_MODULE_INIT(init) {
+    Nan::Set(target, Nan::New("construct_block_blob").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(construct_block_blob)).ToLocalChecked());
     Nan::Set(target, Nan::New("convert_blob").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(convert_blob)).ToLocalChecked());
     Nan::Set(target, Nan::New("address_decode").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(address_decode)).ToLocalChecked());
     Nan::Set(target, Nan::New("get_pow_hash").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(get_pow_hash)).ToLocalChecked());
     Nan::Set(target, Nan::New("get_id_hash").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(get_id_hash)).ToLocalChecked());
+    Nan::Set(target, Nan::New("generate_scratchpad").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(generate_scratchpad)).ToLocalChecked());
 }
 
 NODE_MODULE(cryptonote, init)

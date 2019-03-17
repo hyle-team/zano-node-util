@@ -1,7 +1,7 @@
 {
-    "name": "cryptonote-util",
+    "name": "zano-util",
     "version": "0.0.1",
-    "main": "cryptonote",
+    "main": "zano",
     "author": {
         "name": "LucasJones, CryptoZoidberg",
         "email": "lucasjonesdev@hotmail.co.uk, crypto.zoidberg@gmail.com"
