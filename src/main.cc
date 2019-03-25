@@ -147,7 +147,7 @@ void address_decode(const Nan::FunctionCallbackInfo<v8::Value>& info) {
 void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
 
     if (args.Length() < 2)
-        return THROW_ERROR_EXCEPTION("You must provide two arguments.");
+        return THROW_ERROR_EXCEPTION("You must provide at least two arguments.");
 
     Local<Object> target = args[0]->ToObject();
     Local<Object> target_spad = args[1]->ToObject();
@@ -189,7 +189,7 @@ void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
 void get_id_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
 
     if (args.Length() < 1)
-        return THROW_ERROR_EXCEPTION("You must provide two arguments.");
+        return THROW_ERROR_EXCEPTION("You must provide one argument.");
 
     Local<Object> target = args[0]->ToObject();
 
