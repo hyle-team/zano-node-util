@@ -6,19 +6,27 @@
         "src/main.cc",
         "src/currency_core/currency_format_utils.cpp",
         "src/currency_core/currency_format_utils_blocks.cpp",
+		"src/currency_core/basic_pow_helpers.cpp",
+		"src/currency_core/basic_pow_helpers.cpp",
         "src/crypto/tree-hash.c",
         "src/crypto/crypto.cpp",
         "src/crypto/crypto-ops.c",
         "src/crypto/crypto-ops-data.c",
         "src/crypto/hash.c",
         "src/crypto/keccak.c",
-        "src/crypto/wild_keccak.cpp",
-        "src/common/base58.cpp"
+        "src/common/base58.cpp",
+		"contrib/ethereum/libethash/ethash.cpp",
+		"contrib/ethereum/libethash/keccak.c",
+		"contrib/ethereum/libethash/keccakf800.c",
+		"contrib/ethereum/libethash/keccakf800.c",
+		"contrib/ethereum/libethash/progpow.cpp",
+		"contrib/ethereum/libethash/managed.cpp"		
       ],
       "include_dirs": [
         "src",
         "src/contrib/epee/include",
         "src/contrib/eos_portable_archive",
+		"contrib/ethereum/libethash"
         "src/contrib",
         "<!(node -e \"require('nan')\")"
       ],
