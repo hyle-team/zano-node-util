@@ -199,8 +199,18 @@ void get_hash_from_block_template_with_extra(const Nan::FunctionCallbackInfo<v8:
 
   if (extra.size())
     b.miner_tx.extra.push_back(extra);
-
+  
   crypto::hash h = currency::get_block_hash(b);
+  //@#@ debug output
+  std::cout << "[get_hash_from_block_template_with_extra]: " << ENDL
+    << "blob: [" << epee::string_tools::buff_to_hex_nodelimer(blob) << "]" << ENDL
+    << "extra: [" << epee::string_tools::buff_to_hex_nodelimer(extra) << "]" << ENDL
+    << "nonce(0?): [" << b.nonce << "]" << ENDL
+    << "header_mining_hash: [" << currency::get_block_header_mining_hash(b) << "]" << ENDL
+    << "blob(with extra): [" << epee::string_tools::buff_to_hex_nodelimer(get_block_hashing_blob(b)) << "]" << ENDL
+    << "result: [" << h << "]" << ENDL;
+  //@#@
+
   SET_BUFFER_RETURN((const char*)&h, 32);
 }
 
@@ -254,6 +264,17 @@ void get_blob_from_block_template(const Nan::FunctionCallbackInfo<v8::Value>& ar
   std::string result_blob = currency::block_to_blob(b);
 
   crypto::hash h = currency::get_block_hash(b);
+
+
+  //@#@ debug output
+  std::cout << "[get_blob_from_block_template]: " << ENDL
+    << "blob: [" << epee::string_tools::buff_to_hex_nodelimer(blob) << "]" << ENDL
+    << "extra: [" << epee::string_tools::buff_to_hex_nodelimer(extra) << "]" << ENDL
+    << "nonce: [" << *nonce_ptr << "]" << ENDL
+    << "header_mining_hash: [" << currency::get_block_header_mining_hash(b) << "]" << ENDL
+    << "res blob: [" << epee::string_tools::buff_to_hex_nodelimer(result_blob) << "]" << ENDL;
+  //@#@
+
 
   SET_BUFFER_RETURN(result_blob.data(), result_blob.size());
 }
