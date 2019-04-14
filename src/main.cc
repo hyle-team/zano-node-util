@@ -200,7 +200,7 @@ void get_hash_from_block_template_with_extra(const Nan::FunctionCallbackInfo<v8:
   if (extra.size())
     b.miner_tx.extra.push_back(extra);
   
-  crypto::hash h = currency::get_block_hash(b);
+  crypto::hash h = currency::get_block_header_mining_hash(b);
   //@#@ debug output
   std::cout << "[get_hash_from_block_template_with_extra]: " << ENDL
     << "blob: [" << epee::string_tools::buff_to_hex_nodelimer(blob) << "]" << ENDL
