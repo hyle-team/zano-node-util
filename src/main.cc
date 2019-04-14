@@ -136,7 +136,7 @@ void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
     if(!Buffer::HasInstance(nonce))
         return THROW_ERROR_EXCEPTION("Argument 2 should be a buffer object.");
 
-    if (!Buffer::HasInstance(nonce))
+    if (!Buffer::HasInstance(height))
       return THROW_ERROR_EXCEPTION("Argument 3 should be a buffer object.");
 
 
