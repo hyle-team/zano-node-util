@@ -122,45 +122,63 @@ Arguments:
 2: height            - 8-byte buffer
 */
 void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
+  
+#define WAYPOINT   std::cout << "!waypoint !"  << __LINE__ << ENDL;
 
+  WAYPOINT
     if (args.Length() < 3)
         return THROW_ERROR_EXCEPTION("You must provide 3 arguments.");
 
+  WAYPOINT
     Local<Object> block_header_hash = args[0]->ToObject();
     Local<Object> nonce = args[1]->ToObject();
     Local<Object> height = args[2]->ToObject();
 
+    WAYPOINT
     if(!Buffer::HasInstance(block_header_hash))
         return THROW_ERROR_EXCEPTION("Argument 1 should be a buffer object.");
 
+    WAYPOINT
     if(!Buffer::HasInstance(nonce))
         return THROW_ERROR_EXCEPTION("Argument 2 should be a buffer object.");
 
+    WAYPOINT
     if (!Buffer::HasInstance(height))
       return THROW_ERROR_EXCEPTION("Argument 3 should be a buffer object.");
 
 
+    WAYPOINT
     uint32_t block_header_hash_len = Buffer::Length(block_header_hash);
+    WAYPOINT
     uint64_t nonce_len = Buffer::Length(nonce);
+    WAYPOINT
     uint64_t height_len = Buffer::Length(height);
+    WAYPOINT
 
     if(block_header_hash_len != 32)
       return THROW_ERROR_EXCEPTION("Argument 1 should be a buffer object of 32 bytes long.");
 
+    WAYPOINT
     if (nonce_len != 8)
       return THROW_ERROR_EXCEPTION("Argument 2 should be a buffer object of 8 bytes long.");
 
+    WAYPOINT
     if (height_len != 8)
       return THROW_ERROR_EXCEPTION("Argument 3 should be a buffer object of 8 bytes long.");
 
-
+    WAYPOINT
     crypto::hash* block_header_hash_ptr = (crypto::hash*)Buffer::Data(block_header_hash);
+    WAYPOINT
     uint64_t* nonce_ptr = (uint64_t*)Buffer::Data(nonce);
+    WAYPOINT
     uint64_t* height_ptr = (uint64_t*)Buffer::Data(height);
+
     
-    
+    WAYPOINT
     crypto::hash h = currency::get_block_longhash(*height_ptr, *block_header_hash_ptr, *nonce_ptr);    
+    WAYPOINT
     SET_BUFFER_RETURN((const char*)&h, 32);
+    WAYPOINT
 }
 
 /*
