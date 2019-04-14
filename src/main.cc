@@ -112,6 +112,7 @@ void address_decode(const Nan::FunctionCallbackInfo<v8::Value>& info) {
 }
 
 #define SET_BUFFER_RETURN(x, len) \
+    v8::Isolate* isolate = args.GetIsolate(); \
     args.GetReturnValue().Set(Buffer::Copy(isolate, x, len).ToLocalChecked());
 
 /*
@@ -159,7 +160,7 @@ void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
     
     
     crypto::hash h = currency::get_block_longhash(*height_ptr, *block_header_hash_ptr, *nonce_ptr);    
-    SET_BUFFER_RETURN(&h, 32);
+    SET_BUFFER_RETURN((const char*)&h, 32);
 }
 
 /*
@@ -200,7 +201,7 @@ void get_hash_from_block_template_with_extra(const Nan::FunctionCallbackInfo<v8:
     b.miner_tx.extra.push_back(extra);
 
   crypto::hash h = currency::get_block_hash(b);
-  SET_BUFFER_RETURN(&h, 32);
+  SET_BUFFER_RETURN((const char*)&h, 32);
 }
 
 /*
@@ -235,7 +236,7 @@ void get_blob_from_block_template(const Nan::FunctionCallbackInfo<v8::Value>& ar
 
   char* block_template_buffer_ptr = Buffer::Data(block_template_buffer);
   char* extra_data_ptr = Buffer::Data(extra_data);
-  uint64_t* nonce_ptr = Buffer::Data(nonce);
+  uint64_t* nonce_ptr = (uint64_t* )Buffer::Data(nonce);
 
   std::string blob(block_template_buffer_ptr, block_template_buffer_len);
   std::string extra(extra_data_ptr, extra_data_len);
@@ -253,6 +254,7 @@ void get_blob_from_block_template(const Nan::FunctionCallbackInfo<v8::Value>& ar
   std::string result_blob = currency::block_to_blob(b);
 
   crypto::hash h = currency::get_block_hash(b);
+
   SET_BUFFER_RETURN(result_blob.data(), result_blob.size());
 }
 

@@ -15,19 +15,19 @@
         "src/crypto/hash.c",
         "src/crypto/keccak.c",
         "src/common/base58.cpp",
-		"contrib/ethereum/libethash/ethash.cpp",
-		"contrib/ethereum/libethash/keccak.c",
-		"contrib/ethereum/libethash/keccakf800.c",
-		"contrib/ethereum/libethash/keccakf800.c",
-		"contrib/ethereum/libethash/progpow.cpp",
-		"contrib/ethereum/libethash/managed.cpp"		
+        "src/contrib/ethereum/libethash/ethash.cpp",
+        "src/contrib/ethereum/libethash/keccak.c",
+        "src/contrib/ethereum/libethash/keccakf800.c",
+        "src/contrib/ethereum/libethash/keccakf800.c",
+        "src/contrib/ethereum/libethash/progpow.cpp",
+        "src/contrib/ethereum/libethash/managed.cpp"
       ],
       "include_dirs": [
         "src",
+        "src/contrib",
         "src/contrib/epee/include",
         "src/contrib/eos_portable_archive",
-		"contrib/ethereum/libethash"
-        "src/contrib",
+        "src/contrib/ethereum/libethash",
         "<!(node -e \"require('nan')\")"
       ],
       "link_settings": {
