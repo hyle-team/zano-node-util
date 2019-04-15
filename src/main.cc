@@ -306,9 +306,6 @@ void get_id_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
   if (!res)
     return THROW_ERROR_EXCEPTION("Unable to parse block");
 
-  if (extra.size())
-    b.miner_tx.extra.push_back(extra);
-
   crypto::hash h = currency::get_block_hash(b);
   //@#@ debug output
   std::cout << "[get_id_hash]: " << ENDL
