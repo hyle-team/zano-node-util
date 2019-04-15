@@ -174,6 +174,7 @@ void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
     uint64_t height_val = *(uint64_t*)Buffer::Data(height);
 
     
+    std::cout << "!!!height!!: " << height_val << ENDL;
     WAYPOINT
     crypto::hash h = currency::get_block_longhash(height_val, block_header_hash_val, nonce_val);
     WAYPOINT
