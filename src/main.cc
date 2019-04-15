@@ -292,7 +292,7 @@ void get_blob_from_block_template(const Nan::FunctionCallbackInfo<v8::Value>& ar
   std::cout << "[get_blob_from_block_template]: " << ENDL
     << "blob: [" << epee::string_tools::buff_to_hex_nodelimer(blob) << "]" << ENDL
     << "extra: [" << epee::string_tools::buff_to_hex_nodelimer(extra) << "]" << ENDL
-    << "nonce: [" << *nonce_ptr << "]" << ENDL
+    << "nonce: [" << nonce_val << "]" << ENDL
     << "header_mining_hash: [" << currency::get_block_header_mining_hash(b) << "]" << ENDL
     << "res blob: [" << epee::string_tools::buff_to_hex_nodelimer(result_blob) << "]" << ENDL;
   //@#@
