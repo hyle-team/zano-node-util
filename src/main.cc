@@ -123,63 +123,45 @@ Arguments:
 */
 void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
   
-#define WAYPOINT   std::cout << "!waypoint !"  << __LINE__ << ENDL;
 
-  WAYPOINT
     if (args.Length() < 3)
         return THROW_ERROR_EXCEPTION("You must provide 3 arguments.");
 
-  WAYPOINT
     Local<Object> block_header_hash = args[0]->ToObject();
     Local<Object> nonce = args[1]->ToObject();
     Local<Object> height = args[2]->ToObject();
 
-    WAYPOINT
     if(!Buffer::HasInstance(block_header_hash))
         return THROW_ERROR_EXCEPTION("Argument 1 should be a buffer object.");
 
-    WAYPOINT
     if(!Buffer::HasInstance(nonce))
         return THROW_ERROR_EXCEPTION("Argument 2 should be a buffer object.");
 
-    WAYPOINT
     if (!Buffer::HasInstance(height))
       return THROW_ERROR_EXCEPTION("Argument 3 should be a buffer object.");
 
-
-    WAYPOINT
     uint32_t block_header_hash_len = Buffer::Length(block_header_hash);
-    WAYPOINT
     uint64_t nonce_len = Buffer::Length(nonce);
-    WAYPOINT
     uint64_t height_len = Buffer::Length(height);
-    WAYPOINT
 
     if(block_header_hash_len != 32)
       return THROW_ERROR_EXCEPTION("Argument 1 should be a buffer object of 32 bytes long.");
 
-    WAYPOINT
     if (nonce_len != 8)
       return THROW_ERROR_EXCEPTION("Argument 2 should be a buffer object of 8 bytes long.");
 
-    WAYPOINT
     if (height_len != 8)
       return THROW_ERROR_EXCEPTION("Argument 3 should be a buffer object of 8 bytes long.");
 
-    WAYPOINT    
     crypto::hash block_header_hash_val = *(crypto::hash*)Buffer::Data(block_header_hash);
-    WAYPOINT
     uint64_t nonce_val = *(uint64_t*)Buffer::Data(nonce);
-    WAYPOINT
     uint64_t height_val = *(uint64_t*)Buffer::Data(height);
 
     
     std::cout << "!!!height!!: " << height_val << ENDL;
-    WAYPOINT
     crypto::hash h = currency::get_block_longhash(height_val, block_header_hash_val, nonce_val);
-    WAYPOINT
+
     SET_BUFFER_RETURN((const char*)&h, 32);
-    WAYPOINT
 }
 
 /*
@@ -303,30 +285,42 @@ void get_blob_from_block_template(const Nan::FunctionCallbackInfo<v8::Value>& ar
 }
 
 
-// void get_id_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
-// 
-//     if (args.Length() < 1)
-//         return THROW_ERROR_EXCEPTION("You must provide two arguments.");
-// 
-//     Local<Object> target = args[0]->ToObject();
-// 
-//     if(!Buffer::HasInstance(target))
-//         return THROW_ERROR_EXCEPTION("Argument 1 should be a buffer object.");
-// 
-// 
-//     char * input = Buffer::Data(target);
-//     
-//     crypto::hash h = AUTO_VAL_INIT(h);
-//     char* output = reinterpret_cast<char* >(&h);
-// 
-//     uint32_t input_len = Buffer::Length(target);
-// 
-//     crypto::cn_fast_hash(input, input_len, h);
-// 
-//     v8::Isolate* isolate = args.GetIsolate();
-// 
-//     SET_BUFFER_RETURN(output, 32);
-// }
+void get_id_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
+
+  if (args.Length() < 1)
+    return THROW_ERROR_EXCEPTION("You must provide 2 arguments.");
+
+  Local<Object> block_buffer = args[0]->ToObject();
+
+
+  if (!Buffer::HasInstance(block_buffer))
+    return THROW_ERROR_EXCEPTION("Argument 1 should be a buffer object.");
+
+  uint64_t block_buffer_len = Buffer::Length(block_buffer);
+
+  char* block_buffer_ptr = Buffer::Data(block_buffer);
+  std::string blob(block_buffer_ptr, block_buffer_len);
+
+  currency::block b = AUTO_VAL_INIT(b);
+  bool res = currency::parse_and_validate_block_from_blob(blob, b);
+  if (!res)
+    return THROW_ERROR_EXCEPTION("Unable to parse block");
+
+  if (extra.size())
+    b.miner_tx.extra.push_back(extra);
+
+  crypto::hash h = currency::get_block_hash(b);
+  //@#@ debug output
+  std::cout << "[get_id_hash]: " << ENDL
+    << "blob: [" << epee::string_tools::buff_to_hex_nodelimer(blob) << "]" << ENDL
+    << "nonce(0?): [" << b.nonce << "]" << ENDL
+    << "header_mining_hash: [" << currency::get_block_header_mining_hash(b) << "]" << ENDL
+    << "hashing_blob: [" << epee::string_tools::buff_to_hex_nodelimer(get_block_hashing_blob(b)) << "]" << ENDL
+    << "result: [" << h << "]" << ENDL;
+  //@#@
+
+  SET_BUFFER_RETURN((const char*)&h, 32);
+}
 
 
 
@@ -338,7 +332,7 @@ NAN_MODULE_INIT(init) {
     Nan::Set(target, Nan::New("get_pow_hash").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(get_pow_hash)).ToLocalChecked());
     Nan::Set(target, Nan::New("get_hash_from_block_template_with_extra").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(get_hash_from_block_template_with_extra)).ToLocalChecked());
     Nan::Set(target, Nan::New("get_blob_from_block_template").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(get_blob_from_block_template)).ToLocalChecked());
-    //Nan::Set(target, Nan::New("get_id_hash").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(get_id_hash)).ToLocalChecked());
+    Nan::Set(target, Nan::New("get_id_hash").ToLocalChecked(), Nan::GetFunction(Nan::New<FunctionTemplate>(get_id_hash)).ToLocalChecked());
     
 }
 
