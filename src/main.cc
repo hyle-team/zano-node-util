@@ -166,16 +166,16 @@ void get_pow_hash(const Nan::FunctionCallbackInfo<v8::Value>& args) {
     if (height_len != 8)
       return THROW_ERROR_EXCEPTION("Argument 3 should be a buffer object of 8 bytes long.");
 
+    WAYPOINT    
+    crypto::hash block_header_hash_val = *(crypto::hash*)Buffer::Data(block_header_hash);
     WAYPOINT
-    crypto::hash* block_header_hash_ptr = (crypto::hash*)Buffer::Data(block_header_hash);
+    uint64_t nonce_val = *(uint64_t*)Buffer::Data(nonce);
     WAYPOINT
-    uint64_t* nonce_ptr = (uint64_t*)Buffer::Data(nonce);
-    WAYPOINT
-    uint64_t* height_ptr = (uint64_t*)Buffer::Data(height);
+    uint64_t height_val = *(uint64_t*)Buffer::Data(height);
 
     
     WAYPOINT
-    crypto::hash h = currency::get_block_longhash(*height_ptr, *block_header_hash_ptr, *nonce_ptr);    
+    crypto::hash h = currency::get_block_longhash(height_val, block_header_hash_val, nonce_val);
     WAYPOINT
     SET_BUFFER_RETURN((const char*)&h, 32);
     WAYPOINT
@@ -205,9 +205,9 @@ void get_hash_from_block_template_with_extra(const Nan::FunctionCallbackInfo<v8:
   uint64_t extra_data_len = Buffer::Length(extra_data);
 
   char* block_template_buffer_ptr = Buffer::Data(block_template_buffer);
-  char* extra_data_ptr = Buffer::Data(extra_data);
-
   std::string blob(block_template_buffer_ptr, block_template_buffer_len);
+
+  char* extra_data_ptr = Buffer::Data(extra_data);
   std::string extra(extra_data_ptr, extra_data_len);
 
   currency::block b = AUTO_VAL_INIT(b);
@@ -260,14 +260,18 @@ void get_blob_from_block_template(const Nan::FunctionCallbackInfo<v8::Value>& ar
   uint64_t block_template_buffer_len = Buffer::Length(block_template_buffer);
   uint64_t extra_data_len = Buffer::Length(extra_data);
   uint64_t nonce_len = Buffer::Length(nonce);
-
+  
+  if (nonce_len != 8)
+    return THROW_ERROR_EXCEPTION("Argument 3 should be a buffer object of 8 bytes long.");
 
   char* block_template_buffer_ptr = Buffer::Data(block_template_buffer);
-  char* extra_data_ptr = Buffer::Data(extra_data);
-  uint64_t* nonce_ptr = (uint64_t* )Buffer::Data(nonce);
-
   std::string blob(block_template_buffer_ptr, block_template_buffer_len);
+
+  char* extra_data_ptr = Buffer::Data(extra_data);
   std::string extra(extra_data_ptr, extra_data_len);
+
+  uint64_t nonce_val = *(uint64_t* )Buffer::Data(nonce);
+
 
   currency::block b = AUTO_VAL_INIT(b);
   bool res = currency::parse_and_validate_block_from_blob(blob, b);
@@ -277,7 +281,7 @@ void get_blob_from_block_template(const Nan::FunctionCallbackInfo<v8::Value>& ar
   if (extra.size())
     b.miner_tx.extra.push_back(extra);
 
-  b.nonce = *nonce_ptr;
+  b.nonce = nonce_val;
 
   std::string result_blob = currency::block_to_blob(b);
 
