@@ -12,26 +12,27 @@ namespace currency
 
   //-----------------------------------------------------------------------------------------------------------------------  
   template<class t_core>
-    t_currency_protocol_handler<t_core>::t_currency_protocol_handler(t_core& rcore, nodetool::i_p2p_endpoint<connection_context>* p_net_layout):m_core(rcore), 
-                                                                                                              m_p2p(p_net_layout),
-                                                                                                              m_syncronized_connections_count(0),
-                                                                                                              m_synchronized(false),
-                                                                                                              m_have_been_synchronized(false),
-                                                                                                              m_max_height_seen(0),
-                                                                                                              m_core_inital_height(0), 
-                                                                                                              m_want_stop(false)
-                                                                                                              
-
+  t_currency_protocol_handler<t_core>::t_currency_protocol_handler(t_core& rcore, nodetool::i_p2p_endpoint<connection_context>* p_net_layout)
+    : m_core(rcore)
+    , m_p2p(p_net_layout)
+    , m_synchronized(false)
+    , m_have_been_synchronized(false)
+    , m_max_height_seen(0)
+    , m_core_inital_height(0)
+    , m_want_stop(false)
+    , m_last_median2local_time_difference(0)
+    , m_last_ntp2local_time_difference(0)
+    , m_debug_ip_address(0)
   {
     if(!m_p2p)
       m_p2p = &m_p2p_stub;
   }
   //-----------------------------------------------------------------------------------------------------------------------
-    template<class t_core>
-    t_currency_protocol_handler<t_core>::~t_currency_protocol_handler()
-    {
-      deinit();
-    }
+  template<class t_core>
+  t_currency_protocol_handler<t_core>::~t_currency_protocol_handler()
+  {
+    deinit();
+  }
   //-----------------------------------------------------------------------------------------------------------------------
   template<class t_core> 
   bool t_currency_protocol_handler<t_core>::init(const boost::program_options::variables_map& vm)
@@ -93,22 +94,32 @@ namespace currency
       << std::setw(20) << "Peer id"
       << std::setw(25) << "Recv/Sent (idle,sec)"
       << std::setw(25) << "State"
-      << std::setw(20) << "Livetime(seconds)" 
+      << std::setw(20) << "Livetime" 
       << std::setw(20) << "Client version" << ENDL;
 
+    size_t incoming_count = 0, outgoing_count = 0;
+    std::multimap<time_t, std::string> conn_map;
     m_p2p->for_each_connection([&](const connection_context& cntxt, nodetool::peerid_type peer_id)
     {
-      ss << std::setw(29) << std::left << std::string(cntxt.m_is_income ? "[INC]":"[OUT]") + 
+      std::stringstream conn_ss;
+      time_t livetime = time(NULL) - cntxt.m_started;
+      conn_ss << std::setw(29) << std::left << std::string(cntxt.m_is_income ? "[INC]":"[OUT]") + 
         string_tools::get_ip_string_from_int32(cntxt.m_remote_ip) + ":" + std::to_string(cntxt.m_remote_port) 
         << std::setw(20) << std::hex << peer_id
         << std::setw(25) << std::to_string(cntxt.m_recv_cnt)+ "(" + std::to_string(time(NULL) - cntxt.m_last_recv) + ")" + "/" + std::to_string(cntxt.m_send_cnt) + "(" + std::to_string(time(NULL) - cntxt.m_last_send) + ")"
         << std::setw(25) << get_protocol_state_string(cntxt.m_state)
-        << std::setw(20) << std::to_string(time(NULL) - cntxt.m_started) 
+        << std::setw(20) << epee::misc_utils::get_time_interval_string(livetime) 
         << std::setw(20) << cntxt.m_remote_version
         << ENDL;
+      conn_map.insert(std::make_pair(livetime, conn_ss.str()));
+      (cntxt.m_is_income ? incoming_count : outgoing_count) += 1;
       return true;
     });
-    LOG_PRINT_L0("Connections: " << ENDL << ss.str());
+
+    for(auto it = conn_map.rbegin(); it != conn_map.rend(); ++it)
+      ss << it->second;
+
+    LOG_PRINT_L0("Connections (" << incoming_count << " in, " << outgoing_count << " out, " << incoming_count + outgoing_count << " total):" << ENDL << ss.str());
   }
   //------------------------------------------------------------------------------------------------------------------------
   template<class t_core> 
@@ -121,7 +132,23 @@ namespace currency
     if(context.m_state == currency_connection_context::state_befor_handshake && !is_inital)
       return true;
 
-    context.m_time_delta = m_core.get_blockchain_storage().get_core_runtime_config().get_core_time() - hshd.core_time;
+    uint64_t local_time = m_core.get_blockchain_storage().get_core_runtime_config().get_core_time();
+    context.m_time_delta = local_time - hshd.core_time;
+
+    // for outgoing connections -- check time difference
+    if (!context.m_is_income)
+    {
+      if (!add_time_delta_and_check_time_sync(context.m_time_delta))
+      {
+        // serious time sync problem detected
+        i_critical_error_handler* ceh(m_core.get_critical_error_handler());
+        if (ceh != nullptr && ceh->on_critical_time_sync_error())
+        {
+          // error is handled by a callee, should not be ignored here, stop processing immideately
+          return true;
+        }
+      }
+    }
 
     if(context.m_state == currency_connection_context::state_synchronizing)
       return true;
@@ -152,16 +179,17 @@ namespace currency
       && m_core.get_blockchain_storage().get_checkpoints().get_top_checkpoint_height() < hshd.last_checkpoint_height 
       && m_core.get_current_blockchain_size() < hshd.last_checkpoint_height )
     {
-      LOG_PRINT_RED("Remote node have longer checkpoints zone( " << hshd.last_checkpoint_height <<  ") " << 
-        "that local (" << m_core.get_blockchain_storage().get_checkpoints().get_top_checkpoint_height() << ")" <<
-        "That means that current software is outdated, please updated it." << 
-        "Current heigh lay under checkpoints on remote host, so it is not possible validate this transactions on local host, disconnecting.", LOG_LEVEL_0);
+      LOG_PRINT_RED("Remote node has longer checkpoints zone (" << hshd.last_checkpoint_height <<  ") " << 
+        "than local (" << m_core.get_blockchain_storage().get_checkpoints().get_top_checkpoint_height() << "). " <<
+        "It means that current software is outdated, please updated it! " << 
+        "Current height lays under checkpoints zone on remote host, so it's impossible to validate remote transactions locally, disconnecting.", LOG_LEVEL_0);
       return false;
-    }else if (m_core.get_blockchain_storage().get_checkpoints().get_top_checkpoint_height() < hshd.last_checkpoint_height)
+    }
+    else if (m_core.get_blockchain_storage().get_checkpoints().get_top_checkpoint_height() < hshd.last_checkpoint_height)
     {
-      LOG_PRINT_MAGENTA("Remote node have longer checkpoints zone( " << hshd.last_checkpoint_height <<  ") " <<
-        "that local (" << m_core.get_blockchain_storage().get_checkpoints().get_top_checkpoint_height() << ")" << 
-        "That means that current software is outdated, please updated it.", LOG_LEVEL_0);
+      LOG_PRINT_MAGENTA("Remote node has longer checkpoints zone (" << hshd.last_checkpoint_height <<  ") " <<
+        "than local (" << m_core.get_blockchain_storage().get_checkpoints().get_top_checkpoint_height() << "). " << 
+        "It means that current software is outdated, please updated it!", LOG_LEVEL_0);
     }
 
     context.m_state = currency_connection_context::state_synchronizing;
@@ -214,10 +242,13 @@ namespace currency
     template<class t_core> 
     int t_currency_protocol_handler<t_core>::handle_notify_new_block(int command, NOTIFY_NEW_BLOCK::request& arg, currency_connection_context& context)
   {
+    //do not process requests if it comes from node wich is debugged
+    if (m_debug_ip_address != 0 && context.m_remote_ip == m_debug_ip_address)
+        return 1;
+
     if(context.m_state != currency_connection_context::state_normal)
       return 1;
 
-    
     //check if block already exists
     block b = AUTO_VAL_INIT(b);
     block_verification_context bvc = AUTO_VAL_INIT(bvc);
@@ -227,6 +258,7 @@ namespace currency
       m_p2p->drop_connection(context);
       return 1;
     }
+
     crypto::hash block_id = get_block_hash(b);
     LOG_PRINT_GREEN("[HANDLE]NOTIFY_NEW_BLOCK " << block_id << " HEIGHT " << get_block_height(b) << " (hop " << arg.hop << ")", LOG_LEVEL_2);
 
@@ -235,7 +267,7 @@ namespace currency
     if (it != m_blocks_id_que.end())
     {
       //already have this block handler in que
-      LOG_PRINT("Block " << block_id << " already in processing que", LOG_LEVEL_2);
+      LOG_PRINT("Block " << block_id << " already in processing que", LOG_LEVEL_3);
       return 1;
     }
     else
@@ -258,6 +290,11 @@ namespace currency
     }
     
     //pre-validate block here, and propagate it to network asap to avoid latency of handling big block (tx flood)
+    //########################################################
+    /*
+    problem with prevalidation: in case of pre_validate_block() is passed but handle_incoming_tx() is failed
+    network got spammed with notifications about this broken block and then connections got closed.
+    temporary disabled to more investigation
     bool prevalidate_relayed = false; 
     if (m_core.pre_validate_block(b, bvc, block_id) && bvc.m_added_to_main_chain)
     {
@@ -266,18 +303,28 @@ namespace currency
       relay_block(arg, context);
       prevalidate_relayed = true;
     }
+    */
+    //########################################################
 
     //now actually process block
     for(auto tx_blob_it = arg.b.txs.begin(); tx_blob_it!=arg.b.txs.end();tx_blob_it++)
     {
-      currency::tx_verification_context tvc = AUTO_VAL_INIT(tvc);
-      m_core.handle_incoming_tx(*tx_blob_it, tvc, true);
-      if(tvc.m_verification_failed)
+      if (tx_blob_it->size() > CURRENCY_MAX_TRANSACTION_BLOB_SIZE)
       {
-        LOG_PRINT_L0("Block verification failed: transaction verification failed, dropping connection");
+        LOG_ERROR("WRONG TRANSACTION BLOB, too big size " << tx_blob_it->size() << ", rejected");
         m_p2p->drop_connection(context);
         return 1;
       }
+
+      crypto::hash tx_hash = null_hash;
+      transaction tx;
+      if (!parse_and_validate_tx_from_blob(*tx_blob_it, tx, tx_hash))
+      {
+        LOG_ERROR("WRONG TRANSACTION BLOB, Failed to parse, rejected");
+        m_p2p->drop_connection(context);
+        return 1;
+      }
+      bvc.m_onboard_transactions[tx_hash] = tx;
     }
     
     m_core.pause_mine();
@@ -289,15 +336,15 @@ namespace currency
       m_p2p->drop_connection(context);
       return 1;
     }
-    LOG_PRINT_GREEN("[HANDLE]NOTIFY_NEW_BLOCK EXTRA: id: " << block_id 
-      << ",bvc.m_added_to_main_chain " << bvc.m_added_to_main_chain
-      << ",prevalidate_result " << prevalidate_relayed
-      << ",bvc.added_to_altchain " << bvc.added_to_altchain
-      << ",bvc.m_marked_as_orphaned " << bvc.m_marked_as_orphaned, LOG_LEVEL_2);
+    LOG_PRINT_GREEN("[HANDLE]NOTIFY_NEW_BLOCK EXTRA " << block_id 
+      << " bvc.m_added_to_main_chain=" << bvc.m_added_to_main_chain
+      //<< ", prevalidate_result=" << prevalidate_relayed
+      << ", bvc.added_to_altchain=" << bvc.m_added_to_altchain
+      << ", bvc.m_marked_as_orphaned=" << bvc.m_marked_as_orphaned, LOG_LEVEL_2);
 
-    if (bvc.m_added_to_main_chain || (bvc.added_to_altchain && bvc.height_difference < 2))
+    if (bvc.m_added_to_main_chain || (bvc.m_added_to_altchain && bvc.m_height_difference < 2))
     { 
-      if (!prevalidate_relayed)
+      if (true/*!prevalidate_relayed*/)
       {
         // pre-validation failed prevoiusly, but complete check was success, not an alternative block
         ++arg.hop;
@@ -321,6 +368,10 @@ namespace currency
   template<class t_core> 
   int t_currency_protocol_handler<t_core>::handle_notify_new_transactions(int command, NOTIFY_NEW_TRANSACTIONS::request& arg, currency_connection_context& context)
   {
+    //do not process requests if it comes from node wich is debugged
+    if (m_debug_ip_address != 0 && context.m_remote_ip == m_debug_ip_address)
+      return 1;
+
     if(context.m_state != currency_connection_context::state_normal)
       return 1;
     uint64_t inital_tx_count = arg.txs.size();
@@ -358,6 +409,10 @@ namespace currency
   template<class t_core> 
   int t_currency_protocol_handler<t_core>::handle_request_get_objects(int command, NOTIFY_REQUEST_GET_OBJECTS::request& arg, currency_connection_context& context)
   {
+    //do not process requests if it comes from node wich is debugged
+    if (m_debug_ip_address != 0 && context.m_remote_ip == m_debug_ip_address)
+      return 1;
+
     LOG_PRINT_L2("[HANDLE]NOTIFY_REQUEST_GET_OBJECTS: arg.blocks.size() = " << arg.blocks.size() << ", arg.txs.size()="<< arg.txs.size());
     LOG_PRINT_L3("[HANDLE]NOTIFY_REQUEST_GET_OBJECTS: " << ENDL << currency::print_kv_structure(arg));
 
@@ -403,6 +458,10 @@ namespace currency
   template<class t_core>
   int t_currency_protocol_handler<t_core>::handle_response_get_objects(int command, NOTIFY_RESPONSE_GET_OBJECTS::request& arg, currency_connection_context& context)
   {
+    //do not process requests if it comes from node wich is debugged
+    if (m_debug_ip_address != 0 && context.m_remote_ip == m_debug_ip_address)
+      return 1;
+
     LOG_PRINT_L2("[HANDLE]NOTIFY_RESPONSE_GET_OBJECTS: arg.blocks.size()=" << arg.blocks.size() << ", arg.missed_ids.size()=" << arg.missed_ids.size() << ", arg.txs.size()=" << arg.txs.size());
     LOG_PRINT_L3("[HANDLE]NOTIFY_RESPONSE_GET_OBJECTS: " << ENDL << currency::print_kv_structure(arg));
     if(context.m_last_response_height > arg.current_blockchain_height)
@@ -486,27 +545,36 @@ namespace currency
       {
         CHECK_STOP_FLAG__DROP_AND_RETURN_IF_SET(1, "Blocks processing interrupted, connection dropped");
 
+        block_verification_context bvc = boost::value_initialized<block_verification_context>();
         //process transactions
         TIME_MEASURE_START(transactions_process_time);
         for (const auto& tx_blob : block_entry.txs)
         {
           CHECK_STOP_FLAG__DROP_AND_RETURN_IF_SET(1, "Block txs processing interrupted, connection dropped");
-
-          tx_verification_context tvc = AUTO_VAL_INIT(tvc);
-          m_core.handle_incoming_tx(tx_blob, tvc, true);
-          if(tvc.m_verification_failed)
+          crypto::hash tx_id = null_hash;
+          transaction tx = AUTO_VAL_INIT(tx);
+          if (!parse_and_validate_tx_from_blob(tx_blob, tx, tx_id))
           {
-            LOG_ERROR_CCONTEXT("transaction verification failed on NOTIFY_RESPONSE_GET_OBJECTS, \r\ntx_id = " 
+            LOG_ERROR_CCONTEXT("failed to parse tx: " 
               << string_tools::pod_to_hex(get_blob_hash(tx_blob)) << ", dropping connection");
             m_p2p->drop_connection(context);
             return 1;
           }
+          bvc.m_onboard_transactions[tx_id] = tx;
+//           tx_verification_context tvc = AUTO_VAL_INIT(tvc);
+//           m_core.handle_incoming_tx(tx_blob, tvc, true);
+//           if(tvc.m_verification_failed)
+//           {
+//             LOG_ERROR_CCONTEXT("transaction verification failed on NOTIFY_RESPONSE_GET_OBJECTS, \r\ntx_id = " 
+//               << string_tools::pod_to_hex(get_blob_hash(tx_blob)) << ", dropping connection");
+//             m_p2p->drop_connection(context);
+//             return 1;
+//           }
         }
         TIME_MEASURE_FINISH(transactions_process_time);
 
         //process block
         TIME_MEASURE_START(block_process_time);
-        block_verification_context bvc = boost::value_initialized<block_verification_context>();
 
         m_core.handle_incoming_block(block_entry.block, bvc, false);
         if (count > 2 && bvc.m_already_exists)
@@ -554,25 +622,19 @@ namespace currency
   template<class t_core> 
   bool t_currency_protocol_handler<t_core>::on_idle()
   {
-    bool have_synced_conn = false;
-    m_p2p->for_each_connection([&](currency_connection_context& context, nodetool::peerid_type peer_id)->bool{
-      if (context.m_state == currency_connection_context::state_normal)
-      {
-        have_synced_conn = true;
-        return false;
-      }
-      return true;
-    });
+    size_t synchronized_connections_count = get_synchronized_connections_count();
+    size_t total_connections_count = m_p2p->get_connections_count();
+    bool have_enough_synchronized_connections = synchronized_connections_count > total_connections_count / 2;
 
-    if (have_synced_conn && !m_synchronized)
+    if (have_enough_synchronized_connections && !m_synchronized)
     {
       on_connection_synchronized();
       m_synchronized = true;
-      LOG_PRINT_MAGENTA("Synchronized set to TRUE (idle)", LOG_LEVEL_0);
+      LOG_PRINT_MAGENTA("Synchronized set to TRUE (" << synchronized_connections_count << " of " << total_connections_count << " conn. synced)", LOG_LEVEL_0);
     }
-    else if (!have_synced_conn && m_synchronized)
+    else if (!have_enough_synchronized_connections && m_synchronized)
     {
-      LOG_PRINT_MAGENTA("Synchronized set to FALSE (idle)", LOG_LEVEL_0);
+      LOG_PRINT_MAGENTA("Synchronized set to FALSE (" << synchronized_connections_count << " of " << total_connections_count << " conn. synced)", LOG_LEVEL_0);
       m_synchronized = false;
     }
 
@@ -582,6 +644,10 @@ namespace currency
   template<class t_core>
   int t_currency_protocol_handler<t_core>::handle_request_chain(int command, NOTIFY_REQUEST_CHAIN::request& arg, currency_connection_context& context)
   {
+    //do not process requests if it comes from node wich is debugged
+    if (m_debug_ip_address != 0 && context.m_remote_ip == m_debug_ip_address)
+      return 1;
+
     LOG_PRINT_L2("[HANDLE]NOTIFY_REQUEST_CHAIN: block_ids.size()=" << arg.block_ids.size());
     LOG_PRINT_L3("[HANDLE]NOTIFY_REQUEST_CHAIN: " << print_kv_structure(arg));
     NOTIFY_RESPONSE_CHAIN_ENTRY::request r;
@@ -666,8 +732,7 @@ namespace currency
     {
       std::list<relay_que_entry> local_que;
       {
-        std::unique_lock<std::mutex> lk(m_relay_que_lock);
-        //m_relay_que_cv.wait(lk);
+        CRITICAL_REGION_LOCAL(m_relay_que_lock);
         local_que.swap(m_relay_que);
       }
       if (local_que.size())
@@ -699,13 +764,14 @@ namespace currency
       if (req.txs.size())
       {
         post_notify<NOTIFY_NEW_TRANSACTIONS>(req, cc);
-        print_connection_context_short(cc, debug_ss);
-        debug_ss << ": " << req.txs.size() << ENDL;
+
+        if (debug_ss.tellp())
+          debug_ss << ", ";
+        debug_ss << cc << ": " << req.txs.size();
       }
     }
     TIME_MEASURE_FINISH_MS(ms);
-    LOG_PRINT_GREEN("[POST RELAY] NOTIFY_NEW_TRANSACTIONS relayed (" << ms << "ms)contexts list: " << debug_ss.str(), LOG_LEVEL_2);
-
+    LOG_PRINT_GREEN("[POST RELAY] NOTIFY_NEW_TRANSACTIONS relayed (" << ms << "ms) to: " << debug_ss.str(), LOG_LEVEL_2);
   }
   //------------------------------------------------------------------------------------------------------------------------
   template<class t_core> 
@@ -744,9 +810,82 @@ namespace currency
     return epee::misc_utils::median(deltas);
   }
   //------------------------------------------------------------------------------------------------------------------------
+  #define TIME_SYNC_DELTA_RING_BUFFER_SIZE         8
+  #define TIME_SYNC_DELTA_TO_LOCAL_MAX_DIFFERENCE  (60 * 5)               // max acceptable difference between time delta median among peers and local time (seconds)
+  #define TIME_SYNC_NTP_TO_LOCAL_MAX_DIFFERENCE    (60 * 5)               // max acceptable difference between NTP time and local time (seconds)
+
+  template<class t_core>
+  bool t_currency_protocol_handler<t_core>::add_time_delta_and_check_time_sync(int64_t time_delta)
+  {
+    CRITICAL_REGION_LOCAL(m_time_deltas_lock);
+
+    auto get_core_time = [this] { return m_core.get_blockchain_storage().get_core_runtime_config().get_core_time(); };
+
+    m_time_deltas.push_back(time_delta);
+    while (m_time_deltas.size() > TIME_SYNC_DELTA_RING_BUFFER_SIZE)
+      m_time_deltas.pop_front();
+
+    if (m_time_deltas.size() < TIME_SYNC_DELTA_RING_BUFFER_SIZE)
+      return true; // not enough data
+   
+    std::vector<int64_t> time_deltas_copy(m_time_deltas.begin(), m_time_deltas.end());
+
+    m_last_median2local_time_difference = epee::misc_utils::median(time_deltas_copy);
+    LOG_PRINT_MAGENTA("TIME: network time difference is " << m_last_median2local_time_difference << " (max is " << TIME_SYNC_DELTA_TO_LOCAL_MAX_DIFFERENCE << ")", ((m_last_median2local_time_difference >= 3) ? LOG_LEVEL_2 : LOG_LEVEL_3));
+    if (std::abs(m_last_median2local_time_difference) > TIME_SYNC_DELTA_TO_LOCAL_MAX_DIFFERENCE)
+    {
+      int64_t ntp_time = tools::get_ntp_time();
+      LOG_PRINT_L2("NTP: received time " << ntp_time << " (" << epee::misc_utils::get_time_str_v2(ntp_time) << "), diff: " << std::showpos << get_core_time() - ntp_time);
+      if (ntp_time == 0)
+      {
+        // error geting ntp time
+        LOG_PRINT_RED("TIME: network time difference is " << m_last_median2local_time_difference << " (max is " << TIME_SYNC_DELTA_TO_LOCAL_MAX_DIFFERENCE << ") but NTP servers did not respond", LOG_LEVEL_0);
+        return false;
+      }
+
+      // got ntp time correctly
+      // update local time, because getting ntp time could be time consuming
+      uint64_t local_time_2 = get_core_time();
+      m_last_ntp2local_time_difference = local_time_2 - ntp_time;
+      if (std::abs(m_last_ntp2local_time_difference) > TIME_SYNC_NTP_TO_LOCAL_MAX_DIFFERENCE)
+      {
+        // local time is out of sync
+        LOG_PRINT_RED("TIME: network time difference is " << m_last_median2local_time_difference << " (max is " << TIME_SYNC_DELTA_TO_LOCAL_MAX_DIFFERENCE << "), NTP time difference is " <<
+          m_last_ntp2local_time_difference << " (max is " << TIME_SYNC_NTP_TO_LOCAL_MAX_DIFFERENCE << ")", LOG_LEVEL_0);
+        return false;
+      }
+
+      // NTP time is OK
+      LOG_PRINT_YELLOW("TIME: network time difference is " << m_last_median2local_time_difference << " (max is " << TIME_SYNC_DELTA_TO_LOCAL_MAX_DIFFERENCE << "), NTP time difference is " <<
+        m_last_ntp2local_time_difference << " (max is " << TIME_SYNC_NTP_TO_LOCAL_MAX_DIFFERENCE << ")", LOG_LEVEL_1);
+    }
+
+    return true;
+  }
+  //------------------------------------------------------------------------------------------------------------------------
+  template<class t_core>
+  bool t_currency_protocol_handler<t_core>::get_last_time_sync_difference(int64_t& last_median2local_time_difference, int64_t& last_ntp2local_time_difference)
+  {
+    CRITICAL_REGION_LOCAL(m_time_deltas_lock);
+    last_median2local_time_difference = m_last_median2local_time_difference;
+    last_ntp2local_time_difference = m_last_ntp2local_time_difference;
+
+    return !(std::abs(m_last_median2local_time_difference) > TIME_SYNC_DELTA_TO_LOCAL_MAX_DIFFERENCE && std::abs(m_last_ntp2local_time_difference) > TIME_SYNC_NTP_TO_LOCAL_MAX_DIFFERENCE);
+  }
+  template<class t_core>
+  void t_currency_protocol_handler<t_core>::set_to_debug_mode(uint32_t ip)
+  {
+    m_debug_ip_address = ip;
+    LOG_PRINT_L0("debug mode is set for IP " << epee::string_tools::get_ip_string_from_int32(m_debug_ip_address));
+  }
+  //------------------------------------------------------------------------------------------------------------------------
   template<class t_core> 
   int t_currency_protocol_handler<t_core>::handle_response_chain_entry(int command, NOTIFY_RESPONSE_CHAIN_ENTRY::request& arg, currency_connection_context& context)
   {
+    //do not process requests if it comes from node wich is debugged
+    if (m_debug_ip_address != 0 && context.m_remote_ip == m_debug_ip_address)
+      return 1;
+
     LOG_PRINT_L2("[HANDLE]NOTIFY_RESPONSE_CHAIN_ENTRY: m_block_ids.size()=" << arg.m_block_ids.size() 
       << ", m_start_height=" << arg.start_height << ", m_total_height=" << arg.total_height);
     LOG_PRINT_L3("[HANDLE]NOTIFY_RESPONSE_CHAIN_ENTRY: " << ENDL << currency::print_kv_structure(arg));
@@ -799,7 +938,7 @@ namespace currency
     {
 #ifdef ASYNC_RELAY_MODE
     {
-      std::unique_lock<std::mutex> lk(m_relay_que_lock);
+      CRITICAL_REGION_LOCAL(m_relay_que_lock);
       m_relay_que.push_back(AUTO_VAL_INIT(relay_que_entry()));
       m_relay_que.back().first = arg;
       m_relay_que.back().second = exclude_context;

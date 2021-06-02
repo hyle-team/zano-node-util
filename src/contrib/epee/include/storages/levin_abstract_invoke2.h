@@ -1,3 +1,4 @@
+// Copyright (c) 2019, anonimal, <anonimal@zano.org>
 // Copyright (c) 2006-2013, Andrey N. Sabelnikov, www.sabelnikov.net
 // All rights reserved.
 // 
@@ -114,7 +115,7 @@ namespace epee
     }
 
     template<class t_result, class t_arg, class callback_t, class t_transport>
-    bool async_invoke_remote_command2(boost::uuids::uuid conn_id, int command, const t_arg& out_struct, t_transport& transport, callback_t cb, size_t inv_timeout = LEVIN_DEFAULT_TIMEOUT_PRECONFIGURED)
+    bool async_invoke_remote_command2(boost::uuids::uuid conn_id, int command, const t_arg& out_struct, t_transport& transport, const callback_t& cb, size_t inv_timeout = LEVIN_DEFAULT_TIMEOUT_PRECONFIGURED)
     {
       typename serialization::portable_storage stg;
       const_cast<t_arg&>(out_struct).store(stg);//TODO: add true const support to searilzation
@@ -125,7 +126,8 @@ namespace epee
         t_result result_struct = AUTO_VAL_INIT(result_struct);
         if( code <=0 )
         {
-          LOG_PRINT_L1("Failed to invoke command " << command << " return code " << code << "(" << epee::levin::get_err_descr(code) << ")");
+          LOG_PRINT_L2("BACKTRACE: " << ENDL << epee::misc_utils::get_callstack());
+          LOG_PRINT_L1("Failed to invoke command " << command << " return code " << code << "(" << epee::levin::get_err_descr(code) << ")context:" << print_connection_context(context));
           TRY_ENTRY()
           cb(code, result_struct, context);
           CATCH_ENTRY2(true)
@@ -148,7 +150,8 @@ namespace epee
       }, inv_timeout);
       if( res <=0 )
       {
-        LOG_PRINT_L1("Failed to invoke command " << command << " return code " << res << "(" << epee::levin::get_err_descr(res)<< ")");
+        LOG_PRINT_L2("BACKTRACE: " << ENDL << epee::misc_utils::get_callstack());
+        LOG_PRINT_L1("Failed to invoke command " << command << " return code " << res << "(" << epee::levin::get_err_descr(res) << ") conn_id=" << conn_id);
         return false;
       }
       return true;

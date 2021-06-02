@@ -36,4 +36,20 @@ namespace currency
     }
 
   };
+
+  /************************************************************************/
+  /*                                                                      */
+  /************************************************************************/
+  struct i_critical_error_handler
+  {
+    // called by currency protocol when the time is critically out of sync
+    // return true if the error is not ignored and the called should not proceed
+    virtual bool on_critical_time_sync_error() = 0;
+    
+    virtual bool on_critical_low_free_space(uint64_t available, uint64_t required) = 0;
+
+    virtual bool on_immediate_stop_requested() = 0;
+  };
+
+
 }

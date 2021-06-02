@@ -18,6 +18,10 @@ using namespace epee;
 #include "currency_core/currency_config.h"
 #include "currency_format_utils.h"
 #include "misc_language.h"
+#include "string_coding.h"
+#include "tx_semantic_validation.h"
+
+#define MINIMUM_REQUIRED_FREE_SPACE_BYTES (1024 * 1024 * 100)
 
 DISABLE_VS_WARNINGS(4355)
 #undef LOG_DEFAULT_CHANNEL 
@@ -27,15 +31,18 @@ namespace currency
 {
 
   //-----------------------------------------------------------------------------------------------
-  core::core(i_currency_protocol* pprotocol):
-              m_mempool(m_blockchain_storage, pprotocol),
-              m_blockchain_storage(m_mempool),
-              m_miner(this, m_blockchain_storage),
-              m_miner_address(boost::value_initialized<account_public_address>()), 
-              m_starter_message_showed(false)
+  core::core(i_currency_protocol* pprotocol)
+    : m_mempool(m_blockchain_storage, pprotocol)
+    , m_blockchain_storage(m_mempool)
+    , m_miner(this, m_blockchain_storage)
+    , m_miner_address(boost::value_initialized<account_public_address>())
+    , m_starter_message_showed(false)
+    , m_critical_error_handler(nullptr)
+    , m_stop_after_height(0)
   {
     set_currency_protocol(pprotocol);
   }
+  //-----------------------------------------------------------------------------------
   void core::set_currency_protocol(i_currency_protocol* pprotocol)
   {
     if(pprotocol)
@@ -44,6 +51,11 @@ namespace currency
       m_pprotocol = &m_protocol_stub;
 
     m_mempool.set_protocol(m_pprotocol);
+  }
+  //-----------------------------------------------------------------------------------
+  void core::set_critical_error_handler(i_critical_error_handler* handler)
+  {
+    m_critical_error_handler = handler;
   }
   //-----------------------------------------------------------------------------------
   bool core::set_checkpoints(checkpoints&& chk_pts)
@@ -64,6 +76,11 @@ namespace currency
   bool core::handle_command_line(const boost::program_options::variables_map& vm)
   {
     m_config_folder = command_line::get_arg(vm, command_line::arg_data_dir);
+    m_stop_after_height = static_cast<uint64_t>(command_line::get_arg(vm, command_line::arg_stop_after_height));
+    if (m_stop_after_height != 0)
+    {
+      LOG_PRINT_YELLOW("Daemon will STOP after block " << m_stop_after_height, LOG_LEVEL_0);
+    }
     return true;
   }
   //-----------------------------------------------------------------------------------------------
@@ -129,7 +146,10 @@ namespace currency
   {
     bool r = handle_command_line(vm);
 
-    r = m_mempool.init(m_config_folder);
+    uint64_t available_space = 0;
+    CHECK_AND_ASSERT_MES(!check_if_free_space_critically_low(&available_space), false, "free space in data folder is critically low: " << std::fixed << available_space / (1024 * 1024) << " MB");
+
+    r = m_mempool.init(m_config_folder, vm);
     CHECK_AND_ASSERT_MES(r, false, "Failed to initialize memory pool");
 
     r = m_blockchain_storage.init(m_config_folder, vm);
@@ -170,15 +190,45 @@ namespace currency
     return true;
   }
   //-----------------------------------------------------------------------------------------------
+  bool core::handle_incoming_tx(const transaction& tx, tx_verification_context& tvc, bool kept_by_block, const crypto::hash& tx_hash_ /* = null_hash */)
+  {
+    TIME_MEASURE_START_MS(wait_lock_time);
+    CRITICAL_REGION_LOCAL(m_incoming_tx_lock);
+    TIME_MEASURE_FINISH_MS(wait_lock_time);
+
+    crypto::hash tx_hash = tx_hash_;
+    if (tx_hash == null_hash)
+      tx_hash = get_transaction_hash(tx);
+
+    TIME_MEASURE_START_MS(add_new_tx_time);
+    bool r = add_new_tx(tx, tx_hash, get_object_blobsize(tx), tvc, kept_by_block);
+    TIME_MEASURE_FINISH_MS(add_new_tx_time);
+
+    if(tvc.m_verification_failed)
+    {LOG_PRINT_RED_L0("Transaction verification failed: " << tx_hash);}
+    else if(tvc.m_verification_impossible)
+    {LOG_PRINT_RED_L0("Transaction verification impossible: " << tx_hash);}
+
+    if (tvc.m_added_to_pool)
+    {
+      LOG_PRINT_L2("incoming tx " << tx_hash << " was added to the pool");
+    }
+    LOG_PRINT_L2("[CORE HANDLE_INCOMING_TX1]: timing " << wait_lock_time
+      << "/" << add_new_tx_time);
+    return r;
+  }
+  //-----------------------------------------------------------------------------------------------
   bool core::handle_incoming_tx(const blobdata& tx_blob, tx_verification_context& tvc, bool kept_by_block)
   {
+    CHECK_AND_ASSERT_MES(!kept_by_block, false, "Transaction associated with block came throw handle_incoming_tx!(not allowed anymore)");
+
     tvc = boost::value_initialized<tx_verification_context>();
     //want to process all transactions sequentially
     TIME_MEASURE_START_MS(wait_lock_time);
     CRITICAL_REGION_LOCAL(m_incoming_tx_lock);
     TIME_MEASURE_FINISH_MS(wait_lock_time);
 
-    if(tx_blob.size() > get_max_tx_size())
+    if(tx_blob.size() > CURRENCY_MAX_TRANSACTION_BLOB_SIZE)
     {
       LOG_PRINT_L0("WRONG TRANSACTION BLOB, too big size " << tx_blob.size() << ", rejected");
       tvc.m_verification_failed = true;
@@ -196,43 +246,19 @@ namespace currency
     }
     TIME_MEASURE_FINISH_MS(parse_tx_time);
     
-
-    TIME_MEASURE_START_MS(check_tx_syntax_time);
-    if(!check_tx_syntax(tx))
-    {
-      LOG_PRINT_L0("WRONG TRANSACTION BLOB, Failed to check tx " << tx_hash << " syntax, rejected");
-      tvc.m_verification_failed = true;
-      return false;
-    }
-    TIME_MEASURE_FINISH_MS(check_tx_syntax_time);
-
     TIME_MEASURE_START_MS(check_tx_semantic_time);
-    if(!check_tx_semantic(tx, kept_by_block))
+    if(!validate_tx_semantic(tx, tx_blob.size()))
     {
-      LOG_PRINT_L0("WRONG TRANSACTION BLOB, Failed to check tx " << tx_hash << " semantic, rejected");
+      LOG_PRINT_L0("WRONG TRANSACTION SEMANTICS, Failed to check tx " << tx_hash << " semantic, rejected");
       tvc.m_verification_failed = true;
       return false;
     }
     TIME_MEASURE_FINISH_MS(check_tx_semantic_time);
 
-    TIME_MEASURE_START_MS(add_new_tx_time);
-    bool r = add_new_tx(tx, tx_hash, get_object_blobsize(tx), tvc, kept_by_block);
-    TIME_MEASURE_FINISH_MS(add_new_tx_time);
-
-    if(tvc.m_verification_failed)
-    {LOG_PRINT_RED_L0("Transaction verification failed: " << tx_hash);}
-    else if(tvc.m_verification_impossible)
-    {LOG_PRINT_RED_L0("Transaction verification impossible: " << tx_hash);}
-
-    if (tvc.m_added_to_pool)
-    {
-      LOG_PRINT_L2("incoming tx " << tx_hash << " was added to the pool");
-    }
-    LOG_PRINT_L2("[CORE HANDLE_INCOMING_TX]: timing " << wait_lock_time
+    bool r = handle_incoming_tx(tx, tvc, kept_by_block, tx_hash);
+    LOG_PRINT_L2("[CORE HANDLE_INCOMING_TX2]: timing " << wait_lock_time
       << "/" << parse_tx_time
-      << "/" << check_tx_syntax_time
-      << "/" << check_tx_semantic_time
-      << "/" << add_new_tx_time);
+      << "/" << check_tx_semantic_time);
     return r;
   }
   //-----------------------------------------------------------------------------------------------
@@ -283,88 +309,9 @@ namespace currency
     return true;
   }
 
-  //-----------------------------------------------------------------------------------------------
-  bool core::check_tx_semantic(const transaction& tx, bool kept_by_block)
-  {
-    if(!tx.vin.size())
-    {
-      LOG_PRINT_RED_L0("tx with empty inputs, rejected for tx id= " << get_transaction_hash(tx));
-      return false;
-    }
 
-    if(!check_inputs_types_supported(tx))
-    {
-      LOG_PRINT_RED_L0("unsupported input types for tx id= " << get_transaction_hash(tx));
-      return false;
-    }
 
-    if(!check_outs_valid(tx))
-    {
-      LOG_PRINT_RED_L0("tx with invalid outputs, rejected for tx id= " << get_transaction_hash(tx));
-      return false;
-    }
 
-    if(!check_money_overflow(tx))
-    {
-      LOG_PRINT_RED_L0("tx has money overflow, rejected for tx id= " << get_transaction_hash(tx));
-      return false;
-    }
-
-    uint64_t amount_in = 0;
-    get_inputs_money_amount(tx, amount_in);
-    uint64_t amount_out = get_outs_money_amount(tx);
-
-    if(amount_in < amount_out)
-    {
-      LOG_PRINT_RED_L0("tx with wrong amounts: ins " << amount_in << ", outs " << amount_out << ", rejected for tx id= " << get_transaction_hash(tx));
-      return false;
-    }
-
-    if(!kept_by_block && get_object_blobsize(tx) >= m_blockchain_storage.get_current_comulative_blocksize_limit() - CURRENCY_COINBASE_BLOB_RESERVED_SIZE)
-    {
-      LOG_PRINT_RED_L0("tx has too big size " << get_object_blobsize(tx) << ", expected no bigger than " << m_blockchain_storage.get_current_comulative_blocksize_limit() - CURRENCY_COINBASE_BLOB_RESERVED_SIZE);
-      return false;
-    }
-
-    //check if tx use different key images
-    if(!check_tx_inputs_keyimages_diff(tx))
-    {
-      LOG_PRINT_RED_L0("tx inputs have the same key images");
-      return false;
-    }
-    
-    if(!check_tx_extra(tx))
-    {
-      LOG_PRINT_RED_L0("tx has wrong extra, rejected");
-      return false;
-    }
-
-    return true;
-  }
-  //-----------------------------------------------------------------------------------------------
-  bool core::check_tx_extra(const transaction& tx)
-  {
-    tx_extra_info ei = AUTO_VAL_INIT(ei);
-    bool r = parse_and_validate_tx_extra(tx, ei);
-    if(!r)
-      return false;
-    return true;
-  }
-  //-----------------------------------------------------------------------------------------------
-  bool core::check_tx_inputs_keyimages_diff(const transaction& tx)
-  {
-    std::unordered_set<crypto::key_image> ki;
-    BOOST_FOREACH(const auto& in, tx.vin)
-    {
-      if (in.type() == typeid(txin_to_key))
-      {
-        CHECKED_GET_SPECIFIC_VARIANT(in, const txin_to_key, tokey_in, false);
-        if (!ki.insert(tokey_in.k_image).second)
-          return false;
-      }
-    }
-    return true;
-  }
   //-----------------------------------------------------------------------------------------------
   bool core::add_new_tx(const transaction& tx, tx_verification_context& tvc, bool kept_by_block)
   {
@@ -404,6 +351,11 @@ namespace currency
   bool core::get_block_template(block& b, const account_public_address& adr, const account_public_address& stakeholder_address, wide_difficulty_type& diffic, uint64_t& height, const blobdata& ex_nonce, bool pos, const pos_entry& pe)
   {
     return m_blockchain_storage.create_block_template(b, adr, stakeholder_address, diffic, height, ex_nonce, pos, pe);
+  }
+  //-----------------------------------------------------------------------------------------------
+  bool core::get_block_template(const create_block_template_params& params, create_block_template_response& resp)
+  {
+    return m_blockchain_storage.create_block_template(params, resp);
   }
   //-----------------------------------------------------------------------------------------------
   bool core::find_blockchain_supplement(const std::list<crypto::hash>& qblock_ids, NOTIFY_RESPONSE_CHAIN_ENTRY::request& resp) const 
@@ -547,7 +499,25 @@ namespace currency
   //-----------------------------------------------------------------------------------------------
   bool core::add_new_block(const block& b, block_verification_context& bvc)
   {
-    return m_blockchain_storage.add_new_block(b, bvc);
+    bool r = m_blockchain_storage.add_new_block(b, bvc);
+    if (r && bvc.m_added_to_main_chain)
+    {
+      uint64_t h = get_block_height(b);
+      auto& crc = m_blockchain_storage.get_core_runtime_config();
+      if (h == crc.hard_fork_01_starts_after_height + 1)
+      { LOG_PRINT_GREEN("Hardfork 1 activated at height " << h, LOG_LEVEL_0); }
+      else if (h == crc.hard_fork_02_starts_after_height + 1)
+      { LOG_PRINT_GREEN("Hardfork 2 activated at height " << h, LOG_LEVEL_0); }
+
+      if (h == m_stop_after_height)
+      {
+        LOG_PRINT_YELLOW("Reached block " << h << ", the daemon will now stop as requested", LOG_LEVEL_0);
+        if (m_critical_error_handler)
+          return m_critical_error_handler->on_immediate_stop_requested();
+        return false;
+      }
+    }
+    return r;
   }
   //-----------------------------------------------------------------------------------------------
   bool core::parse_block(const blobdata& block_blob, block& b, block_verification_context& bvc)
@@ -576,7 +546,6 @@ namespace currency
   //-----------------------------------------------------------------------------------------------
   bool core::handle_incoming_block(const blobdata& block_blob, block_verification_context& bvc, bool update_miner_blocktemplate)
   {
-    bvc = AUTO_VAL_INIT_T(block_verification_context);
     block  b = AUTO_VAL_INIT(b);
     if (!parse_block(block_blob, b, bvc))
     {
@@ -613,11 +582,6 @@ namespace currency
   bool core::parse_tx_from_blob(transaction& tx, crypto::hash& tx_hash, const blobdata& blob)
   {
     return parse_and_validate_tx_from_blob(blob, tx, tx_hash);
-  }
-  //-----------------------------------------------------------------------------------------------
-    bool core::check_tx_syntax(const transaction& tx)
-  {
-    return true;
   }
   //-----------------------------------------------------------------------------------------------
   bool core::get_pool_transactions(std::list<transaction>& txs)
@@ -678,6 +642,7 @@ namespace currency
     }
 
     m_prune_alt_blocks_interval.do_call([this](){return m_blockchain_storage.prune_aged_alt_blocks();});
+    m_check_free_space_interval.do_call([this](){ check_free_space(); return true; });
     m_miner.on_idle();
     m_mempool.on_idle();
     return true;
@@ -702,7 +667,40 @@ namespace currency
       l->on_blockchain_update();
   }
   //-----------------------------------------------------------------------------------------------
+  bool core::check_if_free_space_critically_low(uint64_t* p_available_space /* = nullptr */)
+  {
+    namespace fs = boost::filesystem;
+
+    try
+    {
+      CHECK_AND_ASSERT_MES(tools::create_directories_if_necessary(m_config_folder), false, "create_directories_if_necessary failed: " << m_config_folder);
+      std::wstring config_folder_w = epee::string_encoding::utf8_to_wstring(m_config_folder);
+      fs::space_info si = fs::space(config_folder_w);
+      if (p_available_space != nullptr)
+        *p_available_space = si.available;
+      return si.available < MINIMUM_REQUIRED_FREE_SPACE_BYTES;
+    }
+    catch (std::exception& e)
+    {
+      LOG_ERROR("failed to determine free space: " << e.what());
+      return false;
+    }
+    catch (...)
+    {
+      LOG_ERROR("failed to determine free space: unknown exception");
+      return false;
+    }
+  }
+
+  void core::check_free_space()
+  {
+    if (!m_critical_error_handler)
+      return;
+
+    uint64_t available_space = 0;
+    if (check_if_free_space_critically_low(&available_space))
+      m_critical_error_handler->on_critical_low_free_space(available_space, MINIMUM_REQUIRED_FREE_SPACE_BYTES);
+  }
+  //-----------------------------------------------------------------------------------------------
 
 }
-#undef LOG_DEFAULT_CHANNEL 
-#define LOG_DEFAULT_CHANNEL NULL

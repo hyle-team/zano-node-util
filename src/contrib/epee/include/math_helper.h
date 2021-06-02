@@ -32,7 +32,7 @@
 
 #include <list>
 #include <numeric>
-#include <boost/timer.hpp>
+#include <boost/timer/timer.hpp>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/random_generator.hpp>
 
@@ -240,7 +240,7 @@ namespace math_helper
 		}
 
 	}
-PUSH_WARNINGS
+PUSH_GCC_WARNINGS
 DISABLE_GCC_WARNING(strict-aliasing)
   inline
   uint64_t generated_random_uint64()
@@ -248,7 +248,7 @@ DISABLE_GCC_WARNING(strict-aliasing)
     boost::uuids::uuid id___ = boost::uuids::random_generator()();
     return  *reinterpret_cast<uint64_t*>(&id___.data[0]); //(*reinterpret_cast<uint64_t*>(&id___.data[0]) ^ *reinterpret_cast<uint64_t*>(&id___.data[8]));
   }
-POP_WARNINGS
+POP_GCC_WARNINGS
 	template<int default_interval, bool start_immediate = true>
 	class once_a_time_seconds
 	{

@@ -6,6 +6,8 @@
 
 #pragma once 
 
+#include "currency_boost_serialization.h"
+
 namespace boost
 {
   namespace serialization
@@ -21,6 +23,8 @@ namespace boost
       ar & te.m_spent_flags;
     }
 
+    // The following method is used in tests only atm
+    // TODO: Consider to remove completely
     template<class archive_t>
     void serialize(archive_t & ar, currency::block_extended_info& ei, const unsigned int version)
     {
@@ -32,17 +36,12 @@ namespace boost
       ar & ei.block_cumulative_size;
       ar & ei.already_generated_coins;
       ar & ei.stake_hash;
+
+      ar & ei.cumulative_diff_precise_adjusted;
+      //ar & ei.version;
+      ar & ei.this_block_tx_fee_median;
+      ar & ei.effective_tx_fee_median;
     }
 
-    template<class archive_t>
-    void serialize(archive_t & ar, currency::extra_alias_entry_base& ai, const unsigned int version)
-    {
-      ar & ai.m_address.m_spend_public_key;
-      ar & ai.m_address.m_view_public_key;
-      ar & ai.m_view_key;
-      ar & ai.m_sign;
-      ar & ai.m_text_comment;
-      //ar & ai.;
-    }
   }
 }

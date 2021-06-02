@@ -98,17 +98,42 @@ do { \
   if (!ar.stream().good()) return false; \
 } while (0);
 
-#define DEFINE_SERIALIZATION_VERSION(v) inline static uint32_t get_serialization_veraion(){ return v; }
+#define DEFINE_SERIALIZATION_VERSION(v) inline static uint32_t get_serialization_version() { return v; }
 
 
 #define VERSION_ENTRY(f) \
 do { \
   ar.tag(#f); \
   if (ar.is_saving_arch())  \
-    f = this->get_serialization_veraion(); \
+    f = this->get_serialization_version(); \
   bool r = ::do_serialize(ar, f); \
   if (!r || !ar.stream().good()) return false; \
 } while (0);
+
+template<typename first_type, typename second_type>
+class serializable_pair : public std::pair<first_type, second_type>
+{
+  typedef std::pair<first_type, second_type> base;
+public:
+  serializable_pair()
+  {}
+  serializable_pair(const first_type& a, const second_type& b) :std::pair<first_type, second_type>(a, b)
+  {}
+  serializable_pair(const serializable_pair& sp) :std::pair<first_type, second_type>(sp.first, sp.second)
+  {}
+
+  BEGIN_SERIALIZE_OBJECT()
+    FIELD(base::first)
+    FIELD(base::second)
+  END_SERIALIZE()
+};
+
+template<typename first_type, typename second_type>
+serializable_pair<first_type, second_type> make_serializable_pair(const first_type& first_value, const second_type& second_value)
+{
+  return serializable_pair<first_type, second_type>(first_value, second_value);
+}
+
 
 namespace serialization {
   namespace detail

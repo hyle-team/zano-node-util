@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2018 Zano Project
+// Copyright (c) 2014-2019 Zano Project
 // Copyright (c) 2014-2018 The Louisdor Project
 // Copyright (c) 2012-2013 The Cryptonote developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -36,6 +36,7 @@ namespace nodetool
     const command_line::arg_descriptor<std::vector<std::string> > arg_p2p_seed_node      = {"seed-node", "Connect to a node to retrieve peer addresses, and disconnect"};
     const command_line::arg_descriptor<bool>                      arg_p2p_hide_my_port   = {"hide-my-port", "Do not announce yourself as peerlist candidate", false, true}; 
     const command_line::arg_descriptor<bool>                      arg_p2p_offline_mode   = { "offline-mode", "Don't connect to any node and reject any connections", false, true };
+    const command_line::arg_descriptor<bool>                      arg_p2p_disable_debug_reqs = { "disable-debug-p2p-requests", "Disable p2p debug requests", false, true };
 }
 
   //-----------------------------------------------------------------------------------
@@ -51,6 +52,7 @@ namespace nodetool
     command_line::add_arg(desc, arg_p2p_seed_node);    
     command_line::add_arg(desc, arg_p2p_hide_my_port);   
     command_line::add_arg(desc, arg_p2p_offline_mode);
+    command_line::add_arg(desc, arg_p2p_disable_debug_reqs);
     command_line::add_arg(desc, arg_p2p_use_only_priority_nodes);       
   }
   //-----------------------------------------------------------------------------------
@@ -98,9 +100,9 @@ namespace nodetool
     if (m_offline_mode)
       return false;
 
-    //@#@ workaround 
+    //@#@ temporary workaround
     return true;
-
+#if 0
     CRITICAL_REGION_LOCAL(m_blocked_ips_lock);
     auto it = m_blocked_ips.find(addr);
     if(it == m_blocked_ips.end())
@@ -112,6 +114,7 @@ namespace nodetool
       return true;
     }
     return false;
+#endif
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
@@ -158,6 +161,7 @@ namespace nodetool
     m_external_port = command_line::get_arg(vm, arg_p2p_external_port);
     m_allow_local_ip = command_line::get_arg(vm, arg_p2p_allow_local_ip);
     m_offline_mode = command_line::get_arg(vm, arg_p2p_offline_mode);
+    m_debug_requests_enabled = !command_line::get_arg(vm, arg_p2p_disable_debug_reqs);
 
     if (m_offline_mode)
     {
@@ -190,8 +194,6 @@ namespace nodetool
     }
     if(command_line::has_arg(vm, arg_p2p_use_only_priority_nodes))
       m_use_only_priority_peers = true;
-    else
-      m_use_only_priority_peers = false;
 
 
     if (command_line::has_arg(vm, arg_p2p_seed_node))
@@ -275,13 +277,20 @@ namespace nodetool
 #ifndef TESTNET
     //TODO:
     //ADD_HARDCODED_SEED_NODE(std::string("0.0.0.0:") + std::to_string(P2P_DEFAULT_PORT));
-    ADD_HARDCODED_SEED_NODE("207.154.237.82", P2P_DEFAULT_PORT);
-    ADD_HARDCODED_SEED_NODE("207.154.240.198", P2P_DEFAULT_PORT);
-    ADD_HARDCODED_SEED_NODE("207.154.255.10", P2P_DEFAULT_PORT);
-    ADD_HARDCODED_SEED_NODE("207.154.228.141", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("95.217.43.225", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("94.130.137.230", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("95.217.42.247", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("94.130.160.115", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("195.201.107.230", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("95.217.46.49", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("159.69.76.144", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("144.76.183.143", P2P_DEFAULT_PORT);
 #else
     //TODO:
-    //ADD_HARDCODED_SEED_NODE(std::string("0.0.0.0:") + std::to_string(P2P_DEFAULT_PORT));
+    ADD_HARDCODED_SEED_NODE("95.217.43.225", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("94.130.137.230", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("95.217.42.247", P2P_DEFAULT_PORT);
+    ADD_HARDCODED_SEED_NODE("94.130.160.115", P2P_DEFAULT_PORT);
 #endif
 
     bool res = handle_command_line(vm);
@@ -402,14 +411,14 @@ namespace nodetool
   template<class t_payload_net_handler>
   bool node_server<t_payload_net_handler>::on_maintainers_entry_update()
   {
-    LOG_PRINT_MAGENTA("Fresh maintainers info recieved(timestamp: " << m_maintainers_info_local.timestamp << ")", LOG_LEVEL_0);
+    LOG_PRINT_CHANNEL_COLOR2(NULL, NULL, "Fresh maintainers info recieved(timestamp: " << m_maintainers_info_local.timestamp << ")", LOG_LEVEL_0, epee::log_space::console_color_magenta);
     if(PROJECT_VERSION_BUILD_NO < m_maintainers_info_local.build_no)
     {
-      LOG_PRINT_MAGENTA("Newer version avaliable: " << static_cast<uint32_t>(m_maintainers_info_local.ver_major) <<
+      LOG_PRINT_CHANNEL_COLOR2(NULL, NULL, "Newer version avaliable: " << static_cast<uint32_t>(m_maintainers_info_local.ver_major) <<
                                                 "." << static_cast<uint32_t>(m_maintainers_info_local.ver_minor) <<
                                                 "." << static_cast<uint32_t>(m_maintainers_info_local.ver_revision) <<
                                                 "." << static_cast<uint32_t>(m_maintainers_info_local.build_no) <<
-                                                ", current version: " <<  PROJECT_VERSION_LONG, LOG_LEVEL_0);
+                                                ", current version: " <<  PROJECT_VERSION_LONG, LOG_LEVEL_0, epee::log_space::console_color_magenta);
     }
     handle_alert_conditions();
 
@@ -475,6 +484,12 @@ namespace nodetool
         return;
       }
 
+      if (!tools::check_remote_client_version(rsp.payload_data.client_version))
+      {
+        LOG_ERROR_CCONTEXT("COMMAND_HANDSHAKE Failed, wrong client version: " << rsp.payload_data.client_version << ", closing connection.");
+        return;
+      }
+
       if(!handle_maintainers_entry(rsp.maintrs_entry))
       {
         LOG_ERROR_CCONTEXT("COMMAND_HANDSHAKE Failed, wrong maintainers entry!, closing connection.");
@@ -493,6 +508,13 @@ namespace nodetool
         if(!m_payload_handler.process_payload_sync_data(rsp.payload_data, context, true))
         {
           LOG_ERROR_CCONTEXT("COMMAND_HANDSHAKE invoked, but process_payload_sync_data returned false, dropping connection.");
+          hsh_result = false;
+          return;
+        }
+
+        if (is_peer_id_used(rsp.node_data.peer_id))
+        {
+          LOG_PRINT_L0("It seems that peer " << std::hex << rsp.node_data.peer_id << " has already been connected, dropping connection");
           hsh_result = false;
           return;
         }
@@ -521,7 +543,7 @@ namespace nodetool
 
     if(!hsh_result)
     {
-      LOG_PRINT_CC_L0(context_, "COMMAND_HANDSHAKE Failed");
+      LOG_PRINT_CC_L0(context_, "COMMAND_HANDSHAKE Failed, closing connection");
       m_net_server.get_config_object().close(context_.m_connection_id);
     }
 
@@ -583,6 +605,26 @@ namespace nodetool
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
+  bool node_server<t_payload_net_handler>::is_peer_id_used(const peerid_type id)
+  {
+    if (id == m_config.m_peer_id)
+      return true; // ourself
+
+    bool used = false;
+    m_net_server.get_config_object().foreach_connection([&](const p2p_connection_context& cntxt)
+    {
+      if (id == cntxt.peer_id)
+      {
+        used = true;
+        return false; // stop enumerating
+      }
+      return true;
+    });
+
+    return used;
+  }
+  //-----------------------------------------------------------------------------------
+  template<class t_payload_net_handler>
   bool node_server<t_payload_net_handler>::is_peer_used(const peerlist_entry& peer)
   {
 
@@ -624,7 +666,7 @@ namespace nodetool
   template<class t_payload_net_handler>
   bool node_server<t_payload_net_handler>::try_to_connect_and_handshake_with_new_peer(const net_address& na, bool just_take_peerlist, uint64_t last_seen_stamp, bool white)
   {
-    LOG_PRINT_L0("Connecting to " << string_tools::get_ip_string_from_int32(na.ip)  << ":" << string_tools::num_to_string_fast(na.port) << "(white=" << white << ", last_seen: " << (last_seen_stamp?misc_utils::get_time_interval_string(time(NULL) - last_seen_stamp):"never" ) << ")...");
+    LOG_PRINT_L1("Connecting to " << string_tools::get_ip_string_from_int32(na.ip)  << ":" << string_tools::num_to_string_fast(na.port) << "(white=" << white << ", last_seen: " << (last_seen_stamp?misc_utils::get_time_interval_string(time(NULL) - last_seen_stamp):"never" ) << ")...");
 
     typename net_server::t_connection_context con = AUTO_VAL_INIT(con);
     bool res = m_net_server.connect(string_tools::get_ip_string_from_int32(na.ip),
@@ -633,7 +675,7 @@ namespace nodetool
       con);
     if(!res)
     {
-      LOG_PRINT_L0("Connect failed to "
+      LOG_PRINT_L1("Connect failed to "
         << string_tools::get_ip_string_from_int32(na.ip)
         << ":" << string_tools::num_to_string_fast(na.port)
         /*<< ", try " << try_count*/);
@@ -647,13 +689,15 @@ namespace nodetool
       LOG_PRINT_CC_L0(con, "Failed to HANDSHAKE with peer "
         << string_tools::get_ip_string_from_int32(na.ip)
         << ":" << string_tools::num_to_string_fast(na.port)
-        /*<< ", try " << try_count*/);
+        << ", closing connection");
+      m_net_server.get_config_object().close(con.m_connection_id);
       return false;
     }
+
     if(just_take_peerlist)
     {
       m_net_server.get_config_object().close(con.m_connection_id);
-      LOG_PRINT_CC_GREEN(con, "CONNECTION HANDSHAKED OK AND CLOSED.", LOG_LEVEL_2);
+      LOG_PRINT_CC_GREEN(con, "CONNECTION HANDSHAKED OK AND CLOSED with peer " << string_tools::get_ip_string_from_int32(na.ip) << ":" << string_tools::num_to_string_fast(na.port), LOG_LEVEL_2);
       return true;
     }
 
@@ -664,7 +708,7 @@ namespace nodetool
     m_peerlist.append_with_peer_white(pe_local);
     //update last seen and push it to peerlist manager
 
-    LOG_PRINT_CC_GREEN(con, "CONNECTION HANDSHAKED OK.", LOG_LEVEL_2);
+    LOG_PRINT_CC_GREEN(con, "CONNECTION HANDSHAKED OK with peer " << string_tools::get_ip_string_from_int32(na.ip) << ":" << string_tools::num_to_string_fast(na.port), LOG_LEVEL_2);
     return true;
   }
   //-----------------------------------------------------------------------------------  
@@ -793,7 +837,10 @@ namespace nodetool
 
       if(is_addr_connected(na))
         continue;
-      try_to_connect_and_handshake_with_new_peer(na);
+      if (!try_to_connect_and_handshake_with_new_peer(na))
+      {
+        LOG_PRINT_L0("connection to priority node " << string_tools::get_ip_string_from_int32(na.ip) << ":" << string_tools::num_to_string_fast(na.port) << " failed");
+      }
     }
     if(m_use_only_priority_peers)
       return true;
@@ -893,7 +940,7 @@ namespace nodetool
     if(m_alert_mode != ALERT_TYPE_CALM)
       return true;
 
-    LOG_PRINT_L0("This software is old, please update.");
+    LOG_PRINT_CHANNEL2(NULL, NULL, "This software is outdated, please update.", LOG_LEVEL_0);
     return true;
   }
   //-----------------------------------------------------------------------------------
@@ -903,7 +950,7 @@ namespace nodetool
     if(m_alert_mode  != ALERT_TYPE_URGENT)
       return true;
 
-    LOG_PRINT_CYAN("[URGENT]:This software is old, please update.", LOG_LEVEL_0);
+    LOG_PRINT_CHANNEL_COLOR2(NULL, NULL, "[URGENT]:This software is dramatically outdated, please update to latest version.", LOG_LEVEL_0, epee::log_space::console_color_cyan);
     return true;
   }
   //-----------------------------------------------------------------------------------
@@ -913,7 +960,7 @@ namespace nodetool
     if(m_alert_mode  != ALERT_TYPE_CRITICAL)
       return true;
 
-    LOG_PRINT_RED("[CRITICAL]:This software is old, please update.", LOG_LEVEL_0);
+    LOG_PRINT_CHANNEL_COLOR2(NULL, NULL, "[CRITICAL]:This software is critically outdated, please update to latest version.", LOG_LEVEL_0, epee::log_space::console_color_red);
     return true;
   }
   //-----------------------------------------------------------------------------------
@@ -1182,7 +1229,7 @@ namespace nodetool
   }
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler> template<class t_callback>
-  bool node_server<t_payload_net_handler>::try_ping(basic_node_data& node_data, p2p_connection_context& context, t_callback cb)
+  bool node_server<t_payload_net_handler>::try_ping(basic_node_data& node_data, p2p_connection_context& context, const t_callback& cb)
   {
     if(!node_data.my_port)
       return false;
@@ -1296,6 +1343,21 @@ namespace nodetool
       return 1;
     }
 
+    if (is_peer_id_used(arg.node_data.peer_id))
+    {
+      LOG_PRINT_CCONTEXT_L1("COMMAND_HANDSHAKE came, but seems that peer " << std::hex << arg.node_data.peer_id << " has already been connected to this node, dropping connection");
+      drop_connection(context);
+      return 1;
+    }
+
+    if (!tools::check_remote_client_version(arg.payload_data.client_version))
+    {
+      LOG_PRINT_CCONTEXT_L2("COMMAND_HANDSHAKE: wrong client version: " << arg.payload_data.client_version << ", closing connection.");
+      drop_connection(context);
+      add_ip_fail(context.m_remote_ip);
+      return 1;
+    }
+
     if(!handle_maintainers_entry(arg.maintrs_entry))
     {
       LOG_ERROR_CCONTEXT("COMMAND_HANDSHAKE Failed, wrong maintainers entry!, closing connection.");
@@ -1334,7 +1396,7 @@ namespace nodetool
     get_local_node_data(rsp.node_data);
     m_payload_handler.get_payload_sync_data(rsp.payload_data);
     fill_maintainers_entry(rsp.maintrs_entry);
-    LOG_PRINT_GREEN("COMMAND_HANDSHAKE", LOG_LEVEL_1);
+    LOG_PRINT_GREEN("COMMAND_HANDSHAKE: v" << arg.payload_data.client_version << " top: " << epee::string_tools::pod_to_hex(arg.payload_data.top_id).substr(0, 6) << " @ " << arg.payload_data.current_height - 1, LOG_LEVEL_1);
     return 1;
   }
   //-----------------------------------------------------------------------------------
@@ -1380,6 +1442,7 @@ namespace nodetool
     std::string s = ss.str();
     return s;
   }
+
   //-----------------------------------------------------------------------------------
   template<class t_payload_net_handler>
   void node_server<t_payload_net_handler>::on_connection_new(p2p_connection_context& context)

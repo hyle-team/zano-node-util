@@ -422,7 +422,6 @@ namespace epee
     std::string get_usage()
     {
       std::stringstream ss;
-      ss << "Commands: " << ENDL;
       size_t max_command_len = 0;
       for(auto& x:m_command_handlers)
         if(x.first.size() > max_command_len)
@@ -430,8 +429,7 @@ namespace epee
 
       for(auto& x:m_command_handlers)
       {
-        ss.width(max_command_len + 3);
-        ss << "  " << std::left <<  x.first << " " << x.second.second << ENDL;
+        ss << "  " << std::left << std::setw(max_command_len + 3) << x.first << " " << x.second.second << ENDL;
       }
       return ss.str();
     }
@@ -480,7 +478,7 @@ namespace epee
 
     bool run_handling(const std::string& prompt, const std::string& usage_string)
     {
-      return m_console_handler.run(boost::bind(&console_handlers_binder::process_command_str, this, _1), prompt, usage_string);
+      return m_console_handler.run(boost::bind(&console_handlers_binder::process_command_str, this, boost::placeholders::_1), prompt, usage_string);
     }
 
     bool help(const std::vector<std::string>& /*args*/)

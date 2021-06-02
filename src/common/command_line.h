@@ -23,6 +23,25 @@ namespace command_line
   struct arg_descriptor<T, false>
   {
     typedef T value_type;
+    arg_descriptor(const char* _name, const char* _description):
+      name(_name),
+      description(_description),
+      not_use_default(true),
+      default_value(T())
+    {}
+    arg_descriptor(const char* _name, const char* _description, const T& default_val) :
+      name(_name),
+      description(_description),
+      not_use_default(false),
+      default_value(default_val)
+    {}
+    arg_descriptor(const char* _name, const char* _description, const T& default_val, bool not_use_default) :
+      name(_name),
+      description(_description),
+      default_value(default_val),
+      not_use_default(not_use_default)
+    {}
+
 
     const char* name;
     const char* description;
@@ -122,7 +141,7 @@ namespace command_line
   boost::program_options::basic_parsed_options<charT> parse_command_line(int argc, const charT* const argv[],
     const boost::program_options::options_description& desc, bool allow_unregistered = false)
   {
-    auto parser = boost::program_options::command_line_parser(argc, argv);
+    auto parser = boost::program_options::basic_command_line_parser<charT>(argc, argv);
     parser.options(desc);
     if (allow_unregistered)
     {
@@ -172,15 +191,29 @@ namespace command_line
     return get_arg<bool, false>(vm, arg);
   }
 
+#define ARG_DB_ENGINE_LMDB   "lmdb"
+#define ARG_DB_ENGINE_MDBX   "mdbx"
+
 
   extern const arg_descriptor<bool>        arg_help;
   extern const arg_descriptor<bool>        arg_version;
   extern const arg_descriptor<std::string> arg_data_dir;
+  extern const arg_descriptor<int>         arg_stop_after_height;
   extern const arg_descriptor<std::string> arg_config_file;
   extern const arg_descriptor<bool>        arg_os_version;
   extern const arg_descriptor<std::string> arg_log_dir;
+  extern const arg_descriptor<std::string> arg_log_file;
   extern const arg_descriptor<int>         arg_log_level;
   extern const arg_descriptor<bool>        arg_console;
   extern const arg_descriptor<bool>        arg_show_details;
   extern const arg_descriptor<bool>        arg_show_rpc_autodoc;
+  extern const arg_descriptor<bool>        arg_disable_upnp;
+  extern const arg_descriptor<bool>        arg_disable_stop_if_time_out_of_sync;
+  extern const arg_descriptor<bool>        arg_disable_stop_on_low_free_space;
+  extern const arg_descriptor<bool>        arg_enable_offers_service;
+  extern const arg_descriptor<std::string> arg_db_engine;
+  extern const arg_descriptor<bool>        arg_no_predownload;
+  extern const arg_descriptor<bool>        arg_force_predownload;
+  extern const arg_descriptor<bool>        arg_validate_predownload;
+  extern const arg_descriptor<std::string> arg_predownload_link;
 }

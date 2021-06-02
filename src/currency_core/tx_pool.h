@@ -20,6 +20,7 @@ using namespace epee;
 #include "math_helper.h"
 
 #include "common/db_abstract_accessor.h"
+#include "common/command_line.h"
 
 #include "currency_format_utils.h"
 #include "verification_context.h"
@@ -80,6 +81,7 @@ namespace currency
       epee::math_helper::average<uint64_t, 5> db_commit_time;      
     };
 
+    typedef std::unordered_map<crypto::key_image, std::set<crypto::hash>> key_image_cache;
 
     tx_memory_pool(blockchain_storage& bchs, i_currency_protocol* pprotocol);
     bool add_tx(const transaction &tx, const crypto::hash &id, uint64_t blob_size, tx_verification_context& tvc, bool kept_by_block, bool from_core = false);
@@ -98,7 +100,7 @@ namespace currency
 
     bool check_tx_multisig_ins_and_outs(const transaction& tx, bool check_against_pool_txs)const;
 
-    bool on_blockchain_inc(uint64_t new_block_height, const crypto::hash& top_block_id);
+    bool on_blockchain_inc(uint64_t new_block_height, const crypto::hash& top_block_id, const std::list<crypto::key_image>& bsk);
     bool on_blockchain_dec(uint64_t new_block_height, const crypto::hash& top_block_id);
     bool on_finalize_db_transaction();
     bool add_transaction_to_black_list(const transaction& tx);
@@ -114,9 +116,9 @@ namespace currency
     void clear();
 
     // load/store operations
-    bool init(const std::string& config_folder);
+    bool init(const std::string& config_folder, const boost::program_options::variables_map& vm);
     bool deinit();
-    bool fill_block_template(block &bl, bool pos, size_t median_size, const boost::multiprecision::uint128_t& already_generated_coins, size_t &total_size, uint64_t &fee, uint64_t height);
+    bool fill_block_template(block &bl, bool pos, size_t median_size, const boost::multiprecision::uint128_t& already_generated_coins, size_t &total_size, uint64_t &fee, uint64_t height, const std::list<transaction>& explicit_txs);
     bool get_transactions(std::list<transaction>& txs) const;
     bool get_all_transactions_details(std::list<tx_rpc_extended_info>& txs)const;
     bool get_all_transactions_brief_details(std::list<tx_rpc_brief_info>& txs)const;
@@ -134,35 +136,29 @@ namespace currency
     uint64_t get_core_time() const;
     bool get_aliases_from_tx_pool(std::list<extra_alias_entry>& aliases)const;
     bool get_aliases_from_tx_pool(std::map<std::string, size_t>& aliases)const;
-    //crypto::hash get_last_core_hash() {return m_last_core_top_hash;}
-    //void set_last_core_hash(const crypto::hash& h) { m_last_core_top_hash = h; }
-
+    
+    bool remove_stuck_transactions(); // made public to be called from coretests
 
   private:
-    bool on_tx_add(const transaction& tx, bool kept_by_block);
-    bool on_tx_remove(const transaction& tx, bool kept_by_block);
-    bool insert_key_images(const transaction& tx, bool kept_by_block);
-    bool remove_key_images(const transaction& tx, bool kept_by_block);
+    bool on_tx_add(crypto::hash tx_id, const transaction& tx, bool kept_by_block);
+    bool on_tx_remove(const crypto::hash &tx_id, const transaction& tx, bool kept_by_block);
+    bool insert_key_images(const crypto::hash& tx_id, const transaction& tx, bool kept_by_block);
+    bool remove_key_images(const crypto::hash &tx_id, const transaction& tx, bool kept_by_block);
     bool insert_alias_info(const transaction& tx);
     bool remove_alias_info(const transaction& tx);
 
     bool is_valid_contract_finalization_tx(const transaction &tx)const;
-    void initialize_db_solo_options_values();
-    bool remove_stuck_transactions();
+    void store_db_solo_options_values();
     bool is_transaction_ready_to_go(tx_details& txd, const crypto::hash& id)const;
     bool validate_alias_info(const transaction& tx, bool is_in_block)const;
-    bool get_key_images_from_tx_pool(std::unordered_set<crypto::key_image>& key_images)const;
-    //bool push_alias_info(const transaction& tx);
-    //bool pop_alias_info(const transaction& tx);
-    bool process_cancel_offer_rules(const transaction& tx);
-    bool unprocess_cancel_offer_rules(const transaction& tx);
+    bool get_key_images_from_tx_pool(key_image_cache& key_images) const;
     bool check_is_taken(const crypto::hash& id) const;
     void set_taken(const crypto::hash& id);
     void reset_all_taken();
+    bool load_keyimages_cache();
     
     typedef tools::db::cached_key_value_accessor<crypto::hash, tx_details, true, false> transactions_container;
     typedef tools::db::cached_key_value_accessor<crypto::hash, bool, false, false> hash_container; 
-    typedef tools::db::cached_key_value_accessor<crypto::key_image, uint64_t, false, false> key_images_container;
     typedef tools::db::cached_key_value_accessor<uint64_t, uint64_t, false, true> solo_options_container;
     typedef tools::db::cached_key_value_accessor<std::string, bool, false, false> aliases_container; 
     typedef tools::db::cached_key_value_accessor<account_public_address, bool, false, false> address_to_aliases_container;
@@ -174,14 +170,11 @@ namespace currency
     //containers
 
     transactions_container m_db_transactions;
-    hash_container m_db_cancel_offer_hash;
     hash_container  m_db_black_tx_list;
-    key_images_container m_db_key_images_set;
     aliases_container m_db_alias_names;
     address_to_aliases_container m_db_alias_addresses;
     solo_options_container m_db_solo_options;
     tools::db::solo_db_value<uint64_t, uint64_t, solo_options_container> m_db_storage_major_compatibility_version;
-    //crypto::hash m_last_core_top_hash;
 
 
     epee::math_helper::once_a_time_seconds<30> m_remove_stuck_tx_interval;
@@ -194,26 +187,10 @@ namespace currency
     //in memory containers
     mutable epee::critical_section m_taken_txs_lock;
     std::unordered_set<crypto::hash> m_taken_txs;
-    mutable epee::critical_section m_remove_stuck_txs_lock;
 
-    
-    /************************************************************************/
-    /*                                                                      */
-    /************************************************************************/
-    class amount_visitor: public boost::static_visitor<uint64_t>
-    {
-    public:
-      uint64_t operator()(const txin_to_key& tx) const
-      {
-        return tx.amount;
-      }
-      uint64_t operator()(const txin_gen& /*tx*/) const
-      {
-        CHECK_AND_ASSERT_MES(false, 0, "coinbase transaction in memory pool");
-        return 0;
-      }
-      uint64_t operator()(const txin_multisig& in) const { return in.amount; }
-    };
+    mutable epee::critical_section m_key_images_lock;
+    key_image_cache m_key_images;
+    mutable epee::critical_section m_remove_stuck_txs_lock;
 
   };
 }

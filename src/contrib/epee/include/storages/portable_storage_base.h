@@ -69,6 +69,8 @@ namespace epee
 {
   namespace serialization
   {
+    enum end_of_line_t { eol_crlf = 0, eol_lf = 1, eol_cr = 2, eol_space = 3 };
+
     struct section;
 
     /************************************************************************/
@@ -78,6 +80,7 @@ namespace epee
     struct array_entry_t
     {
       array_entry_t():m_it(m_array.end()){}        
+      array_entry_t(const array_entry_t& other):m_array(other.m_array), m_it(m_array.end()){}
 
       const t_entry_type* get_first_val() const 
       {

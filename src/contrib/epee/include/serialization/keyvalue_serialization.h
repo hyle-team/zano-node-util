@@ -78,7 +78,8 @@ public: \
 #define KV_SERIALIZE_POD_AS_HEX_STRING_N(varialble, val_name) \
 	KV_SERIALIZE_CUSTOM_N(varialble, std::string, epee::transform_t_pod_to_str<decltype(varialble)>, epee::transform_str_to_t_pod<decltype(varialble)>, val_name)
 
-
+#define KV_SERIALIZE_BLOB_AS_HEX_STRING_N(varialble, val_name) \
+	KV_SERIALIZE_CUSTOM_N(varialble, std::string, epee::transform_binbuf_to_hexstr, epee::transform_hexstr_to_binbuff, val_name)
 
 
 #define KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE_N(varialble, val_name) \
@@ -99,12 +100,28 @@ public: \
 #define KV_SERIALIZE_CONTAINER_POD_AS_BLOB(varialble)     KV_SERIALIZE_CONTAINER_POD_AS_BLOB_N(varialble, #varialble)
 #define KV_SERIALIZE_CUSTOM(varialble, stored_type, from_v_to_stored, from_stored_to_v)    KV_SERIALIZE_CUSTOM_N(varialble, stored_type, from_v_to_stored, from_stored_to_v, #varialble)
 #define KV_SERIALIZE_POD_AS_HEX_STRING(varialble)         KV_SERIALIZE_POD_AS_HEX_STRING_N(varialble, #varialble)
+#define KV_SERIALIZE_BLOB_AS_HEX_STRING(varialble)         KV_SERIALIZE_BLOB_AS_HEX_STRING_N(varialble, #varialble)
+  
 
 
 #define KV_CHAIN_MAP(variable_obj) epee::namespace_accessor<decltype(this_ref.variable_obj)>::template serialize_map<is_store>(this_ref.variable_obj, stg, hparent_section);
 #define KV_CHAIN_BASE(base_type) base_type::serialize_map<is_store>(static_cast<base_type&>(const_cast<typename std::remove_const<this_type>::type&>(this_ref)), stg, hparent_section);
 	
 
+
+  template<typename t_uint>
+  struct uint_mask_selector
+  {
+    template<t_uint mask>
+    inline static bool get_value_of_flag_by_mask(const t_uint& given_flags)
+    { 
+      return given_flags&mask == 0 ? false : true;
+    }
+  }; 
+
+
+#define KV_SERIALIZE_EPHEMERAL_BOOL_FROM_FLAG_N(var, mask, val_name) \
+  KV_SERIALIZE_EPHEMERAL_N(bool, uint_mask_selector<decltype(var)>::get_value_of_flag_by_mask<mask>, val_name)
 
 
 
