@@ -578,13 +578,13 @@ bool blockchain_storage::set_checkpoints(checkpoints&& chk_pts)
   catch (const std::exception& ex)
   {
     m_db.abort_transaction();
-    LOG_ERROR("UNKNOWN EXCEPTION WHILE ADDINIG NEW BLOCK: " << ex.what());
+    LOG_ERROR("UNKNOWN EXCEPTION WHILE SETTING CHECKPOINTS: " << ex.what());
     return false;
   }
   catch (...)
   {
     m_db.abort_transaction();
-    LOG_ERROR("UNKNOWN EXCEPTION WHILE ADDINIG NEW BLOCK.");
+    LOG_ERROR("UNKNOWN EXCEPTION WHILE SETTING CHECKPOINTS.");
     return false;
   }
   
@@ -594,7 +594,7 @@ bool blockchain_storage::prune_ring_signatures_and_attachments(uint64_t height, 
 {
   CRITICAL_REGION_LOCAL(m_read_lock);
 
-  CHECK_AND_ASSERT_MES(height < m_db_blocks.size(), false, "prune_ring_signatures called with wrong parameter: " << height << ", m_blocks.size() " << m_db_blocks.size());
+  CHECK_AND_ASSERT_MES(height < m_db_blocks.size(), false, "prune_ring_signatures called with wrong parameter: " << height << ", m_blocks.size() = " << m_db_blocks.size());
   auto vptr = m_db_blocks[height];
   CHECK_AND_ASSERT_MES(vptr.get(), false, "Failed to get block on height");
 
@@ -626,22 +626,20 @@ bool blockchain_storage::prune_ring_signatures_and_attachments_if_need()
 {
   CRITICAL_REGION_LOCAL(m_read_lock);
 
-  if (m_db_blocks.size() > 1 && m_checkpoints.get_top_checkpoint_height() && m_checkpoints.get_top_checkpoint_height() > m_db_current_pruned_rs_height)
-  {    
-    uint64_t pruning_last_height = std::min(m_db_blocks.size() - 1, m_checkpoints.get_top_checkpoint_height());
-    if (pruning_last_height > m_db_current_pruned_rs_height)
+  uint64_t top_block_height = get_top_block_height();
+  uint64_t pruning_end_height = m_checkpoints.get_checkpoint_before_height(top_block_height);
+  if (pruning_end_height > m_db_current_pruned_rs_height)
+  {
+    LOG_PRINT_CYAN("Starting pruning ring signatues and attachments from height " << m_db_current_pruned_rs_height + 1 << " to height " << pruning_end_height
+      << " (" << pruning_end_height - m_db_current_pruned_rs_height << " blocks), top block height is " << top_block_height, LOG_LEVEL_0);
+    uint64_t tx_count = 0, sig_count = 0, attach_count = 0;
+    for(uint64_t height = m_db_current_pruned_rs_height + 1; height <= pruning_end_height; height++)
     {
-      LOG_PRINT_CYAN("Starting pruning ring signatues and attachments from height " << m_db_current_pruned_rs_height + 1 << " to height " << pruning_last_height
-        << " (" << pruning_last_height - m_db_current_pruned_rs_height << " blocks)", LOG_LEVEL_0);
-      uint64_t tx_count = 0, sig_count = 0, attach_count = 0;
-      for(uint64_t height = m_db_current_pruned_rs_height + 1; height <= pruning_last_height; height++)
-      {
-        bool res = prune_ring_signatures_and_attachments(height, tx_count, sig_count, attach_count);
-        CHECK_AND_ASSERT_MES(res, false, "failed to prune_ring_signatures_and_attachments for height = " << height);
-      }
-      m_db_current_pruned_rs_height = pruning_last_height;
-      LOG_PRINT_CYAN("Transaction pruning finished: " << sig_count << " signatures and " << attach_count << " attachments released in " << tx_count << " transactions.", LOG_LEVEL_0);
+      bool res = prune_ring_signatures_and_attachments(height, tx_count, sig_count, attach_count);
+      CHECK_AND_ASSERT_MES(res, false, "failed to prune_ring_signatures_and_attachments for height = " << height);
     }
+    m_db_current_pruned_rs_height = pruning_end_height;
+    LOG_PRINT_CYAN("Transaction pruning finished: " << sig_count << " signatures and " << attach_count << " attachments released in " << tx_count << " transactions.", LOG_LEVEL_0);
   }
   return true;
 }
@@ -1036,7 +1034,9 @@ void blockchain_storage::purge_alt_block_txs_hashs(const block& b)
 //------------------------------------------------------------------
 void blockchain_storage::do_erase_altblock(alt_chain_container::iterator it)
 {
-  purge_altblock_keyimages_from_big_heap(it->second.bl, get_block_hash(it->second.bl));
+  crypto::hash id = get_block_hash(it->second.bl);
+  LOG_PRINT_L1("erasing alt block " << print16(id) << " @ " << get_block_height(it->second.bl));
+  purge_altblock_keyimages_from_big_heap(it->second.bl, id);
   purge_alt_block_txs_hashs(it->second.bl);
   m_alternative_chains.erase(it);
 }
@@ -2114,7 +2114,7 @@ bool blockchain_storage::get_tx_rpc_details(const crypto::hash& h, tx_rpc_extend
 
   if (tx_ptr && !timestamp)
   {
-    timestamp = get_actual_timestamp(m_db_blocks[tx_ptr->m_keeper_block_height]->bl);
+    timestamp = get_block_datetime(m_db_blocks[tx_ptr->m_keeper_block_height]->bl);
   }
   tei.keeper_block = static_cast<int64_t>(tx_ptr->m_keeper_block_height);
   fill_tx_rpc_details(tei, tx_ptr->tx, &(*tx_ptr), h, timestamp, is_short);
@@ -2203,11 +2203,11 @@ bool blockchain_storage::get_main_block_rpc_details(uint64_t i, block_rpc_extend
     crypto::hash coinbase_id = get_transaction_hash(core_bei_ptr->bl.miner_tx);
     //load transactions details
     bei.transactions_details.push_back(tx_rpc_extended_info());
-    get_tx_rpc_details(coinbase_id, bei.transactions_details.back(), get_actual_timestamp(core_bei_ptr->bl), true);
+    get_tx_rpc_details(coinbase_id, bei.transactions_details.back(), get_block_datetime(core_bei_ptr->bl), true);
     for (auto& h : core_bei_ptr->bl.tx_hashes)
     {
       bei.transactions_details.push_back(tx_rpc_extended_info());
-      get_tx_rpc_details(h, bei.transactions_details.back(), get_actual_timestamp(core_bei_ptr->bl), true);
+      get_tx_rpc_details(h, bei.transactions_details.back(), get_block_datetime(core_bei_ptr->bl), true);
       bei.total_fee += bei.transactions_details.back().fee;
       bei.total_txs_size += bei.transactions_details.back().blob_size;
     }
@@ -2288,13 +2288,13 @@ bool blockchain_storage::get_alt_block_rpc_details(const block_extended_info& be
   crypto::hash coinbase_id = get_transaction_hash(bei_core.bl.miner_tx);
   //load transactions details
   bei.transactions_details.push_back(tx_rpc_extended_info());
-  fill_tx_rpc_details(bei.transactions_details.back(), bei_core.bl.miner_tx, nullptr, coinbase_id, get_actual_timestamp(bei_core.bl));
+  fill_tx_rpc_details(bei.transactions_details.back(), bei_core.bl.miner_tx, nullptr, coinbase_id, get_block_datetime(bei_core.bl));
 
   bei.total_fee = 0;
   for (auto& h : bei_core.bl.tx_hashes)
   {
     bei.transactions_details.push_back(tx_rpc_extended_info());
-    if (!get_tx_rpc_details(h, bei.transactions_details.back(), get_actual_timestamp(bei_core.bl), true))
+    if (!get_tx_rpc_details(h, bei.transactions_details.back(), get_block_datetime(bei_core.bl), true))
     {
       //tx not in blockchain, supposed to be in tx pool
       m_tx_pool.get_transaction_details(h, bei.transactions_details.back());
@@ -2407,8 +2407,8 @@ uint64_t blockchain_storage::get_seconds_between_last_n_block(size_t n) const
   if (m_db_blocks.size() <= n)
     return 0;
 
-  uint64_t top_block_ts = get_actual_timestamp(m_db_blocks[m_db_blocks.size() - 1]->bl);
-  uint64_t n_block_ts   = get_actual_timestamp(m_db_blocks[m_db_blocks.size() - 1 - n]->bl);
+  uint64_t top_block_ts = get_block_datetime(m_db_blocks[m_db_blocks.size() - 1]->bl);
+  uint64_t n_block_ts   = get_block_datetime(m_db_blocks[m_db_blocks.size() - 1 - n]->bl);
 
   return top_block_ts > n_block_ts ? top_block_ts - n_block_ts : 0;
 }
@@ -3816,12 +3816,14 @@ namespace currency
     const crypto::hash& m_tx_id;
     const crypto::hash& m_bl_id;
     const uint64_t m_bl_height;
-    add_transaction_input_visitor(blockchain_storage& bcs, blockchain_storage::key_images_container& m_db_spent_keys, const crypto::hash& tx_id, const crypto::hash& bl_id, const uint64_t bl_height) :
+    uint64_t &m_mixins_count;
+    add_transaction_input_visitor(blockchain_storage& bcs, blockchain_storage::key_images_container& m_db_spent_keys, const crypto::hash& tx_id, const crypto::hash& bl_id, const uint64_t bl_height, uint64_t& mixins_count) :
       m_bcs(bcs),
       m_db_spent_keys(m_db_spent_keys),
       m_tx_id(tx_id),
       m_bl_id(bl_id),
-      m_bl_height(bl_height)
+      m_bl_height(bl_height), 
+      m_mixins_count(mixins_count)
     {}
     bool operator()(const txin_to_key& in) const
     {
@@ -3846,7 +3848,8 @@ namespace currency
           return false;
         }
       }
-
+      if (m_mixins_count < in.key_offsets.size())
+        m_mixins_count = in.key_offsets.size();
       return true;
     }
     bool operator()(const txin_htlc& in) const
@@ -3896,11 +3899,11 @@ bool blockchain_storage::add_transaction_from_block(const transaction& tx, const
   process_blockchain_tx_attachments(tx, bl_height, bl_id, timestamp);
   TIME_MEASURE_FINISH_PD_COND(need_to_profile, tx_process_attachment);
 
-
+  uint64_t mixins_count = 0;
   TIME_MEASURE_START_PD(tx_process_inputs);
   for(const txin_v& in : tx.vin)
   {
-    if(!boost::apply_visitor(add_transaction_input_visitor(*this, m_db_spent_keys, tx_id, bl_id, bl_height), in))
+    if(!boost::apply_visitor(add_transaction_input_visitor(*this, m_db_spent_keys, tx_id, bl_id, bl_height, mixins_count), in))
     {
       LOG_ERROR("critical internal error: add_transaction_input_visitor failed. but key_images should be already checked");
       purge_transaction_keyimages_from_blockchain(tx, false);
@@ -3913,6 +3916,13 @@ bool blockchain_storage::add_transaction_from_block(const transaction& tx, const
     }
   }
   TIME_MEASURE_FINISH_PD_COND(need_to_profile, tx_process_inputs);
+  if (need_to_profile && mixins_count > 0)
+  {
+    m_performance_data.tx_mixin_count.push(mixins_count);
+#ifdef _DEBUG
+    LOG_PRINT_L0("[TX_MIXINS]: " <<  mixins_count);
+#endif
+  }
 
   //check if there is already transaction with this hash
   TIME_MEASURE_START_PD(tx_check_exist);
@@ -4895,7 +4905,7 @@ void blockchain_storage::get_pos_mining_estimate(uint64_t amount_coins,
     auto bei = m_db_blocks[h];
     if (!is_pos_block(bei->bl))
       continue;
-    uint64_t ts = get_actual_timestamp(bei->bl);
+    uint64_t ts = get_block_datetime(bei->bl);
     pos_ts_min = min(pos_ts_min, ts);
     pos_ts_max = max(pos_ts_max, ts);
     pos_total_minted_money += get_reward_from_miner_tx(bei->bl.miner_tx);
@@ -5050,7 +5060,8 @@ bool blockchain_storage::validate_pos_block(const block& b,
   }
 
 
-  //check actual time if it there
+  // the following check is de-facto not applicable since 2021-10, but left intact to avoid consensus issues
+  // PoS blocks don't use etc_tx_time anymore to store actual timestamp; instead, they use tx_service_attachment in mining tx extra
   uint64_t actual_ts = get_actual_timestamp(b);
   if ((actual_ts > b.timestamp && actual_ts - b.timestamp > POS_MAX_ACTUAL_TIMESTAMP_TO_MINED) ||
     (actual_ts < b.timestamp && b.timestamp - actual_ts > POS_MAX_ACTUAL_TIMESTAMP_TO_MINED)
@@ -5369,7 +5380,7 @@ bool blockchain_storage::handle_block_to_main_chain(const block& bl, const crypt
   block_fees.reserve(bl.tx_hashes.size());
   //process transactions
   TIME_MEASURE_START_PD(all_txs_insert_time_5);
-  if (!add_transaction_from_block(bl.miner_tx, get_transaction_hash(bl.miner_tx), id, get_current_blockchain_size(), get_actual_timestamp(bl)))
+  if (!add_transaction_from_block(bl.miner_tx, get_transaction_hash(bl.miner_tx), id, get_current_blockchain_size(), get_block_datetime(bl)))
   {
     LOG_PRINT_L0("Block with id: " << id << " failed to add transaction to blockchain storage");
     bvc.m_verification_failed = true;
@@ -5444,7 +5455,7 @@ bool blockchain_storage::handle_block_to_main_chain(const block& bl, const crypt
 
     TIME_MEASURE_START_PD(tx_prapare_append);
     uint64_t current_bc_size = get_current_blockchain_size();
-    uint64_t actual_timestamp = get_actual_timestamp(bl);
+    uint64_t actual_timestamp = get_block_datetime(bl);
     TIME_MEASURE_FINISH_PD(tx_prapare_append);
     TIME_MEASURE_START_PD(tx_append_time);
     if(!add_transaction_from_block(tx, tx_id, id, current_bc_size, actual_timestamp))
@@ -5612,7 +5623,7 @@ bool blockchain_storage::handle_block_to_main_chain(const block& bl, const crypt
   stringstream powpos_str_entry, timestamp_str_entry;
   if (is_pos_bl)
   { // PoS
-    int64_t actual_ts = get_actual_timestamp(bei.bl); // signed int is intentionally used here
+    int64_t actual_ts = get_block_datetime(bei.bl); // signed int is intentionally used here
     int64_t ts_diff = actual_ts - m_core_runtime_config.get_core_time();
     powpos_str_entry << "PoS:\t" << proof_hash << ", stake amount: " << print_money_brief(pos_coinstake_amount) << ", final_difficulty: " << this_coin_diff;
     timestamp_str_entry << ", actual ts: " << actual_ts << " (diff: " << std::showpos << ts_diff << "s) block ts: " << std::noshowpos << bei.bl.timestamp << " (shift: " << std::showpos << static_cast<int64_t>(bei.bl.timestamp) - actual_ts << ")";
