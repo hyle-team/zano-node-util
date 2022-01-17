@@ -26,6 +26,7 @@ using namespace epee;
 #include "bc_payments_id_service.h"
 #include "bc_escrow_service.h"
 #include "bc_attachments_helpers.h"
+#include "bc_block_datetime_service.h"
 #include "genesis.h"
 #include "genesis_acc.h"
 #include "common/mnemonic-encoding.h"
@@ -63,11 +64,6 @@ namespace currency
   false,
   pos_entry());
   }*/
-  //---------------------------------------------------------------
-  uint64_t get_coinday_weight(uint64_t amount)
-  {
-    return amount;
-  }
   //---------------------------------------------------------------
   wide_difficulty_type correct_difficulty_with_sequence_factor(size_t sequence_factor, wide_difficulty_type diff)
   {
@@ -594,12 +590,12 @@ namespace currency
   std::string generate_origin_for_htlc(const txout_htlc& htlc, const account_keys& acc_keys)
   {
     std::string blob;
-    string_tools::apped_pod_to_strbuff(blob, htlc.pkey_redeem);
-    string_tools::apped_pod_to_strbuff(blob, htlc.pkey_refund);
-    string_tools::apped_pod_to_strbuff(blob, acc_keys.spend_secret_key);
+    string_tools::append_pod_to_strbuff(blob, htlc.pkey_redeem);
+    string_tools::append_pod_to_strbuff(blob, htlc.pkey_refund);
+    string_tools::append_pod_to_strbuff(blob, acc_keys.spend_secret_key);
     crypto::hash origin_hs = crypto::cn_fast_hash(blob.data(), blob.size());
     std::string origin_blob;
-    string_tools::apped_pod_to_strbuff(origin_blob, origin_hs);
+    string_tools::append_pod_to_strbuff(origin_blob, origin_hs);
     return origin_blob;
   }
   //---------------------------------------------------------------
@@ -759,8 +755,12 @@ namespace currency
   struct encrypt_attach_visitor : public boost::static_visitor<void>
   {
     bool& m_was_crypted_entries;
+    const keypair& m_onetime_keypair;
+    const account_public_address& m_destination_addr;
     const crypto::key_derivation& m_key;
-    encrypt_attach_visitor(bool& was_crypted_entries, const crypto::key_derivation& key) :m_was_crypted_entries(was_crypted_entries), m_key(key)
+
+    encrypt_attach_visitor(bool& was_crypted_entries, const crypto::key_derivation& key, const  keypair& onetime_keypair = null_keypair, const account_public_address& destination_addr = null_pub_addr) :
+      m_was_crypted_entries(was_crypted_entries), m_key(key), m_onetime_keypair(onetime_keypair), m_destination_addr(destination_addr)
     {}
     void operator()(tx_comment& comment)
     {
@@ -789,6 +789,7 @@ namespace currency
     }
     void operator()(tx_service_attachment& sa)
     {
+      const std::string original_body = sa.body;
       if (sa.flags&TX_SERVICE_ATTACHMENT_DEFLATE_BODY)
       {
         zlib_helper::pack(sa.body);
@@ -796,7 +797,28 @@ namespace currency
 
       if (sa.flags&TX_SERVICE_ATTACHMENT_ENCRYPT_BODY)
       {
-        crypto::chacha_crypt(sa.body, m_key);
+        crypto::key_derivation derivation_local = m_key;
+        if (sa.flags&TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE)
+        {
+          CHECK_AND_ASSERT_THROW_MES(m_destination_addr.spend_public_key != currency::null_pkey && m_onetime_keypair.sec != currency::null_skey, "tx_service_attachment with TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE: keys uninitialized");
+          //encrypt with "spend keys" only, to prevent auditable watchers decrypt it
+          bool r = crypto::generate_key_derivation(m_destination_addr.spend_public_key, m_onetime_keypair.sec, derivation_local);
+          CHECK_AND_ASSERT_THROW_MES(r, "tx_service_attachment with TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE: Failed to make derivation");
+          crypto::chacha_crypt(sa.body, derivation_local);
+        }
+        else
+        {
+          crypto::chacha_crypt(sa.body, derivation_local);
+        }
+        if (sa.flags&TX_SERVICE_ATTACHMENT_ENCRYPT_ADD_PROOF)
+        {
+          //take hash from derivation and use it as a salt
+          crypto::hash derivation_hash = crypto::cn_fast_hash(&derivation_local, sizeof(derivation_local));
+          std::string salted_body = original_body;
+          string_tools::append_pod_to_strbuff(salted_body, derivation_hash);
+          crypto::hash proof_hash = crypto::cn_fast_hash(salted_body.data(), salted_body.size());
+          sa.security.push_back(*(crypto::public_key*)&proof_hash);
+        }
         m_was_crypted_entries = true;
       }
     }
@@ -808,12 +830,18 @@ namespace currency
 
   struct decrypt_attach_visitor : public boost::static_visitor<void>
   {
+    const account_keys& m_acc_keys;
+    const crypto::public_key& m_tx_onetime_pubkey;
     const crypto::key_derivation& rkey;
     std::vector<payload_items_v>& rdecrypted_att;
     decrypt_attach_visitor(const crypto::key_derivation& key,
-      std::vector<payload_items_v>& decrypted_att) :
+      std::vector<payload_items_v>& decrypted_att, 
+      const account_keys& acc_keys = null_acc_keys,
+      const crypto::public_key& tx_onetime_pubkey = null_pkey) :
       rkey(key),
-      rdecrypted_att(decrypted_att)
+      rdecrypted_att(decrypted_att), 
+      m_acc_keys(acc_keys), 
+      m_tx_onetime_pubkey(tx_onetime_pubkey)
     {}
     void operator()(const tx_comment& comment)
     {
@@ -825,15 +853,44 @@ namespace currency
     void operator()(const tx_service_attachment& sa)
     {
       tx_service_attachment local_sa = sa;
+      crypto::key_derivation derivation_local = rkey;
       if (sa.flags&TX_SERVICE_ATTACHMENT_ENCRYPT_BODY)
       {
-        crypto::chacha_crypt(local_sa.body, rkey);
+        if (sa.flags&TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE)
+        {
+          if (m_acc_keys.spend_secret_key == null_skey)
+          {
+            //this watch only wallet, decrypting supposed to be impossible
+            return;
+          }
+          CHECK_AND_ASSERT_THROW_MES(m_acc_keys.spend_secret_key != currency::null_skey && m_tx_onetime_pubkey != currency::null_pkey, "tx_service_attachment with TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE: keys uninitialized");
+          bool r = crypto::generate_key_derivation(m_tx_onetime_pubkey, m_acc_keys.spend_secret_key, derivation_local);
+          CHECK_AND_ASSERT_THROW_MES(r, "Failed to generate_key_derivation at TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE");
+          crypto::chacha_crypt(local_sa.body, derivation_local);
+
+        }
+        else
+        {
+          crypto::chacha_crypt(local_sa.body, derivation_local);
+        }  
       }
 
       if (sa.flags&TX_SERVICE_ATTACHMENT_DEFLATE_BODY)
       {
         zlib_helper::unpack(local_sa.body);
       }
+
+      if (sa.flags&TX_SERVICE_ATTACHMENT_ENCRYPT_BODY && sa.flags&TX_SERVICE_ATTACHMENT_ENCRYPT_ADD_PROOF)
+      {
+        CHECK_AND_ASSERT_MES(sa.security.size() == 1, void(), "Unexpected key in tx_service_attachment with TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE");
+        //take hash from derivation and use it as a salt
+        crypto::hash derivation_hash = crypto::cn_fast_hash(&derivation_local, sizeof(derivation_local));
+        std::string salted_body = local_sa.body;
+        string_tools::append_pod_to_strbuff(salted_body, derivation_hash);
+        crypto::hash proof_hash = crypto::cn_fast_hash(salted_body.data(), salted_body.size()); // proof_hash = Hs(local_sa.body || Hs(s * R)), s - spend secret, R - tx pub
+        CHECK_AND_ASSERT_MES(*(crypto::public_key*)&proof_hash == sa.security.front(), void(), "Proof hash missmatch on decrypting with TX_SERVICE_ATTACHMENT_ENCRYPT_ADD_PROOF");
+      }
+
       rdecrypted_att.push_back(local_sa);
     }
 
@@ -870,9 +927,10 @@ namespace currency
 
   //---------------------------------------------------------------
   template<class items_container_t>
-  bool decrypt_payload_items(const crypto::key_derivation& derivation, const items_container_t& items_to_decrypt, std::vector<payload_items_v>& decrypted_att)
+  bool decrypt_payload_items(const crypto::key_derivation& derivation, const items_container_t& items_to_decrypt, std::vector<payload_items_v>& decrypted_att, const account_keys& acc_keys = null_acc_keys,
+    const crypto::public_key& tx_onetime_pubkey = null_pkey)
   {
-    decrypt_attach_visitor v(derivation, decrypted_att);
+    decrypt_attach_visitor v(derivation, decrypted_att, acc_keys, tx_onetime_pubkey);
     for (auto& a : items_to_decrypt)
       boost::apply_visitor(v, a);
 
@@ -955,8 +1013,8 @@ namespace currency
       return true;
     }
     
-    decrypt_payload_items(derivation, tx.extra, decrypted_items);
-    decrypt_payload_items(derivation, tx.attachment, decrypted_items);
+    decrypt_payload_items(derivation, tx.extra, decrypted_items, is_income ? acc_keys: account_keys(), get_tx_pub_key_from_extra(tx));
+    decrypt_payload_items(derivation, tx.attachment, decrypted_items, is_income ? acc_keys : account_keys(), get_tx_pub_key_from_extra(tx));
     return true;
   }
 
@@ -969,11 +1027,11 @@ namespace currency
     bool was_attachment_crypted_entries = false;
     bool was_extra_crypted_entries = false;
 
-    encrypt_attach_visitor v(was_attachment_crypted_entries, derivation);
+    encrypt_attach_visitor v(was_attachment_crypted_entries, derivation, tx_random_key, destination_addr);
     for (auto& a : tx.attachment)
       boost::apply_visitor(v, a);
 
-    encrypt_attach_visitor v2(was_extra_crypted_entries, derivation);
+    encrypt_attach_visitor v2(was_extra_crypted_entries, derivation, tx_random_key, destination_addr);
     for (auto& a : tx.extra)
       boost::apply_visitor(v2, a);
 
@@ -994,26 +1052,26 @@ namespace currency
     }
   }
   //---------------------------------------------------------------
-  void load_wallet_transfer_info_flags(tools::wallet_public::wallet_transfer_info& x)
-  {
-    x.is_service = currency::is_service_tx(x.tx);
-    x.is_mixing = currency::does_tx_have_only_mixin_inputs(x.tx);
-    x.is_mining = currency::is_coinbase(x.tx);
-    if (!x.is_mining)
-      x.fee = currency::get_tx_fee(x.tx);
-    else
-      x.fee = 0;
-    x.show_sender = currency::is_showing_sender_addres(x.tx);
-    tx_out htlc_out = AUTO_VAL_INIT(htlc_out);
-    txin_htlc htlc_in = AUTO_VAL_INIT(htlc_in);
+  // void load_wallet_transfer_info_flags(tools::wallet_public::wallet_transfer_info& x)
+  // {
+  //   x.is_service = currency::is_service_tx(x.tx);
+  //   x.is_mixing = currency::does_tx_have_only_mixin_inputs(x.tx);
+  //   x.is_mining = currency::is_coinbase(x.tx);
+  //   if (!x.is_mining)
+  //     x.fee = currency::get_tx_fee(x.tx);
+  //   else
+  //     x.fee = 0;
+  //   x.show_sender = currency::is_showing_sender_addres(x.tx);
+  //   tx_out htlc_out = AUTO_VAL_INIT(htlc_out);
+  //   txin_htlc htlc_in = AUTO_VAL_INIT(htlc_in);
 
-    x.tx_type = get_tx_type_ex(x.tx, htlc_out, htlc_in);
-    if(x.tx_type == GUI_TX_TYPE_HTLC_DEPOSIT && x.is_income == true)
-    {
-      //need to override amount
-      x.amount = htlc_out.amount;
-    }
-  }
+  //   x.tx_type = get_tx_type_ex(x.tx, htlc_out, htlc_in);
+  //   if(x.tx_type == GUI_TX_TYPE_HTLC_DEPOSIT && x.is_income == true)
+  //   {
+  //     //need to override amount
+  //     x.amount = htlc_out.amount;
+  //   }
+  // }
 
   //---------------------------------------------------------------
   uint64_t get_tx_type_ex(const transaction& tx, tx_out& htlc_out, txin_htlc& htlc_in)
@@ -2000,8 +2058,8 @@ namespace currency
   crypto::hash hash_together(const pod_operand_a& a, const pod_operand_b& b)
   {
     std::string blob;
-    string_tools::apped_pod_to_strbuff(blob, a);
-    string_tools::apped_pod_to_strbuff(blob, b);
+    string_tools::append_pod_to_strbuff(blob, a);
+    string_tools::append_pod_to_strbuff(blob, b);
     return crypto::cn_fast_hash(blob.data(), blob.size());
   }
   //------------------------------------------------------------------
@@ -2051,6 +2109,8 @@ namespace currency
     return median_fee * 10;
   }
   //---------------------------------------------------------------
+  // NOTE: this function is obsolete and depricated
+  // PoS block real timestamp is set using a service attachment in mining tx extra since 2021-10 
   uint64_t get_actual_timestamp(const block& b)
   {
     uint64_t tes_ts = b.timestamp;
@@ -2061,6 +2121,41 @@ namespace currency
         tes_ts = t.v;
     }
     return tes_ts;
+  }
+  //---------------------------------------------------------------
+  // returns timestamp from BC_BLOCK_DATETIME_SERVICE_ID via tx_service_attachment in extra
+  // fallbacks to old-style actual timestamp via etc_tx_time, then to block timestamp
+  uint64_t get_block_datetime(const block& b)
+  {
+    // first try BC_BLOCK_DATETIME_SERVICE_ID
+    tx_service_attachment sa = AUTO_VAL_INIT(sa);
+    if (get_type_in_variant_container(b.miner_tx.extra, sa))
+    {
+      if (sa.service_id == BC_BLOCK_DATETIME_SERVICE_ID && sa.instruction == BC_BLOCK_DATETIME_INSTRUCTION_DEFAULT)
+      {
+        uint64_t ts;
+        if (epee::string_tools::get_pod_from_strbuff(sa.body, ts))
+          return ts;
+      }
+    }
+    
+    // next try etc_tx_time
+    etc_tx_time t = AUTO_VAL_INIT(t);
+    if (get_type_in_variant_container(b.miner_tx.extra, t))
+      return t.v;
+
+    // otherwise return default: block.ts
+    return b.timestamp;
+  }
+  //---------------------------------------------------------------
+  void set_block_datetime(uint64_t datetime, block& b)
+  {
+    tx_service_attachment sa = AUTO_VAL_INIT(sa);
+    sa.service_id = BC_BLOCK_DATETIME_SERVICE_ID;
+    sa.instruction = BC_BLOCK_DATETIME_INSTRUCTION_DEFAULT;
+    sa.flags = 0;
+    epee::string_tools::append_pod_to_strbuff(sa.body, datetime);
+    b.miner_tx.extra.push_back(sa);
   }
   //------------------------------------------------------------------
   bool validate_alias_name(const std::string& al)
@@ -2720,7 +2815,7 @@ namespace currency
     pei_rpc.timestamp = bei_chain.bl.timestamp;
     pei_rpc.id = epee::string_tools::pod_to_hex(h);
     pei_rpc.prev_id = epee::string_tools::pod_to_hex(bei_chain.bl.prev_id);
-    pei_rpc.actual_timestamp = get_actual_timestamp(bei_chain.bl);
+    pei_rpc.actual_timestamp = get_block_datetime(bei_chain.bl);
     pei_rpc.type = is_pos_block(bei_chain.bl) ? 0 : 1;
     pei_rpc.already_generated_coins = boost::lexical_cast<std::string>(bei_chain.already_generated_coins);
     pei_rpc.this_block_fee_median = bei_chain.this_block_tx_fee_median;
@@ -2886,6 +2981,13 @@ namespace currency
       return tools::base58::encode_addr(CURRENCY_PUBLIC_AUDITABLE_ADDRESS_BASE58_PREFIX, t_serializable_object_to_blob(addr)); // new format Zano address (auditable)
     
     return tools::base58::encode_addr(CURRENCY_PUBLIC_ADDRESS_BASE58_PREFIX, t_serializable_object_to_blob(addr)); // new format Zano address (normal)
+  }
+  //-----------------------------------------------------------------------
+  bool is_address_like_wrapped(const std::string& addr)
+  {
+    if (addr.length() == 42 && addr.substr(0, 2) == "0x")
+      return true;
+    else return false;
   }
   //-----------------------------------------------------------------------
   std::string get_account_address_and_payment_id_as_str(const account_public_address& addr, const payment_id_t& payment_id)

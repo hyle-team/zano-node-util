@@ -28,7 +28,7 @@
 #include "currency_format_utils_blocks.h"
 #include "currency_format_utils_transactions.h"
 #include "core_runtime_config.h"
-#include "wallet/wallet_public_structs_defs.h"
+// #include "wallet/wallet_public_structs_defs.h"
 
 
 // ------ get_tx_type_definition -------------
@@ -289,7 +289,8 @@ namespace currency
   bool decrypt_payload_items(bool is_income, const transaction& tx, const account_keys& acc_keys, std::vector<payload_items_v>& decrypted_items);
   void encrypt_attachments(transaction& tx, const account_keys& sender_keys, const account_public_address& destination_addr, const keypair& tx_random_key);
   bool is_derivation_used_to_encrypt(const transaction& tx, const crypto::key_derivation& derivation);
-  void load_wallet_transfer_info_flags(tools::wallet_public::wallet_transfer_info& x);
+  bool is_address_like_wrapped(const std::string& addr);
+  // void load_wallet_transfer_info_flags(tools::wallet_public::wallet_transfer_info& x);
   uint64_t get_tx_type(const transaction& tx);
   uint64_t get_tx_type_ex(const transaction& tx, tx_out& htlc_out, txin_htlc& htlc_in);
   size_t get_multisig_out_index(const std::vector<tx_out>& outs);
@@ -328,8 +329,10 @@ namespace currency
 
   // prints amount in format "3.14", "0.0"
   std::string print_money_brief(uint64_t amount);
-  uint64_t get_actual_timestamp(const block& b);
-  
+  uint64_t get_actual_timestamp(const block& b); // obsolete and depricated, use get_block_datetime
+  uint64_t get_block_datetime(const block& b);
+  void set_block_datetime(uint64_t datetime, block& b);
+
   bool addendum_to_hexstr(const std::vector<crypto::hash>& add, std::string& hex_buff);
   bool hexstr_to_addendum(const std::string& hex_buff, std::vector<crypto::hash>& add);
   bool set_payment_id_to_tx(std::vector<attachment_v>& att, const std::string& payment_id);
@@ -345,7 +348,6 @@ namespace currency
   //PoS
   bool is_pos_block(const block& b);
   bool is_pos_block(const transaction& tx);
-  uint64_t get_coinday_weight(uint64_t amount);
   wide_difficulty_type correct_difficulty_with_sequence_factor(size_t sequence_factor, wide_difficulty_type diff);
   void print_currency_details();
   std::string print_reward_change_first_blocks(size_t n_of_first_blocks);
