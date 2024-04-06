@@ -1,0 +1,3 @@
+[submodule "Zano"]
+	path = Zano
+	url = https://github.com/hyle-team/zano.git
