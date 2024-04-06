@@ -56,16 +56,16 @@ namespace epee
     }
     //-----------------------------------------------------------------------------------------------------------
     template<class t_struct>
-    bool store_t_to_json(const t_struct& str_in, std::string& json_buff, size_t indent = 0)
+    bool store_t_to_json(const t_struct& str_in, std::string& json_buff, size_t indent = 0, end_of_line_t eol = eol_crlf)
     {
       portable_storage ps;
       str_in.store(ps);
-      ps.dump_as_json(json_buff, indent);
+      ps.dump_as_json(json_buff, indent, eol);
       return true;
     }
     //-----------------------------------------------------------------------------------------------------------
     template<class t_struct>
-    std::string store_t_to_json(const t_struct& str_in, size_t indent = 0)
+    std::string store_t_to_json(const t_struct& str_in, size_t indent = 0, end_of_line_t eol = eol_crlf)
     {
       std::string json_buff;
       store_t_to_json(str_in, json_buff, indent);
@@ -101,7 +101,7 @@ namespace epee
       return load_t_from_binary(out, f_buff);
     }
     //-----------------------------------------------------------------------------------------------------------
-PUSH_WARNINGS
+PUSH_VS_WARNINGS
 DISABLE_VS_WARNINGS(4100)
     template<class t_struct>
     bool store_t_to_binary(const t_struct& str_in, std::string& binary_buff, size_t indent = 0)
@@ -110,7 +110,7 @@ DISABLE_VS_WARNINGS(4100)
       str_in.store(ps);
       return ps.store_to_binary(binary_buff);
     }
-POP_WARNINGS
+POP_VS_WARNINGS
     //-----------------------------------------------------------------------------------------------------------
     template<class t_struct>
     std::string store_t_to_binary(const t_struct& str_in, size_t indent = 0)

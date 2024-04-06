@@ -24,6 +24,7 @@ namespace currency
   struct i_miner_handler
   {
     virtual bool handle_block_found(const block& b, block_verification_context* p_verification_result = nullptr) = 0;
+    virtual bool get_block_template(const create_block_template_params& params, create_block_template_response& resp) = 0;
     virtual bool get_block_template(block& b, const account_public_address& adr, const account_public_address& stakeholder_address, wide_difficulty_type& diffic, uint64_t& height, const blobdata& ex_nonce, bool pos = false, const pos_entry& pe = pos_entry()) = 0;
   protected:
     ~i_miner_handler(){};
@@ -105,7 +106,7 @@ namespace currency
     std::list<boost::thread> m_threads;
     ::critical_section m_threads_lock;
     i_miner_handler* m_phandler;
-    blockchain_storage& m_bc;
+    //blockchain_storage& m_bc;
     account_public_address m_mine_address;
     math_helper::once_a_time_seconds<5> m_update_block_template_interval;
     math_helper::once_a_time_seconds<2> m_update_merge_hr_interval;

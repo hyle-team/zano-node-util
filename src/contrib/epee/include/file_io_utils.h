@@ -51,7 +51,8 @@
 #include <sys/file.h>
 #endif
 
-#include "include_base_utils.h"
+//#include "include_base_utils.h"
+#include "string_coding.h"
 
 namespace epee
 {
@@ -78,7 +79,7 @@ namespace file_io_utils
 
 #ifdef BOOST_LEXICAL_CAST_INCLUDED
 	inline
-	bool get_not_used_filename(const std::string& folder, OUT std::string& result_name)
+	bool get_not_used_filename(const std::string& folder, std::string& result_name)
 	{	
 		DWORD folder_attr = ::GetFileAttributesA(folder.c_str());
 		if(folder_attr == INVALID_FILE_ATTRIBUTES)
@@ -222,13 +223,23 @@ namespace file_io_utils
 		return str_result;
 	}
 #endif
+
+  inline const std::wstring& convert_utf8_to_wstring_if_needed(const std::wstring& s)
+  {
+    return s;
+  }
+
+  inline std::wstring convert_utf8_to_wstring_if_needed(const std::string& s)
+  {
+    return epee::string_encoding::utf8_to_wstring(s);
+  }
 	 
   template<class t_string>
   bool is_file_exist(const t_string& path)
-	{
-		boost::filesystem::path p(path);
-		return boost::filesystem::exists(p);
-	}
+  {
+    boost::filesystem::path p(convert_utf8_to_wstring_if_needed(path));
+    return boost::filesystem::exists(p);
+  }
 
 	/*
 	inline 
@@ -261,19 +272,18 @@ namespace file_io_utils
   template<class t_string>
   bool save_string_to_file_throw(const t_string& path_to_file, const std::string& str)
   {
-      //std::ofstream fstream;
-      boost::filesystem::ofstream fstream;
-      fstream.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-      fstream.open(path_to_file, std::ios_base::binary | std::ios_base::out | std::ios_base::trunc);
-      fstream << str;
-      fstream.close();
-      return true;
+    //std::ofstream fstream;
+    boost::filesystem::ofstream fstream;
+    fstream.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    fstream.open(convert_utf8_to_wstring_if_needed(path_to_file), std::ios_base::binary | std::ios_base::out | std::ios_base::trunc);
+    fstream << str;
+    fstream.close();
+    return true;
   }
 
 	template<class t_string>
   bool save_string_to_file(const t_string& path_to_file, const std::string& str)
 	{
-
 		try
 		{
       return save_string_to_file_throw(path_to_file, str);
@@ -288,6 +298,39 @@ namespace file_io_utils
 			return false;
 		}
 	}
+
+  template<class t_string>
+  bool load_file_to_string(const t_string& path_to_file, std::string& target_str)
+  {
+    try
+    {
+      boost::filesystem::ifstream  fstream;
+      //fstream.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+      fstream.open(convert_utf8_to_wstring_if_needed(path_to_file), std::ios_base::binary | std::ios_base::in | std::ios::ate);
+      if (!fstream.good())
+        return false;
+      std::ifstream::pos_type file_size = fstream.tellg();
+
+      if (file_size > 1000000000)
+        return false;//don't get crazy
+      size_t file_size_t = static_cast<size_t>(file_size);
+
+      target_str.resize(file_size_t);
+
+      fstream.seekg(0, std::ios::beg);
+      fstream.read((char*)target_str.data(), target_str.size());
+      if (!fstream.good())
+        return false;
+
+      fstream.close();
+      return true;
+    }
+    catch (...)
+    {
+      return false;
+    }
+  }
+
 
 	/*
 	inline
@@ -316,10 +359,10 @@ namespace file_io_utils
 	}
 	*/
 	inline
-	bool get_file_time(const std::string& path_to_file, OUT time_t& ft)
+	bool get_file_time(const std::string& path_to_file, time_t& ft)
 	{
 		boost::system::error_code ec;
-		ft = boost::filesystem::last_write_time(boost::filesystem::path(path_to_file), ec);
+		ft = boost::filesystem::last_write_time(epee::string_encoding::utf8_to_wstring(path_to_file), ec);
 		if(!ec)
 			return true;
 		else
@@ -330,7 +373,7 @@ namespace file_io_utils
 		bool set_file_time(const std::string& path_to_file, const time_t& ft)
 	{
 		boost::system::error_code ec;
-		boost::filesystem::last_write_time(boost::filesystem::path(path_to_file), ft, ec);
+		boost::filesystem::last_write_time(epee::string_encoding::utf8_to_wstring(path_to_file), ft, ec);
 		if(!ec)
 			return true;
 		else
@@ -338,38 +381,7 @@ namespace file_io_utils
 	}
 
 
-	inline
-		bool load_file_to_string(const std::string& path_to_file, std::string& target_str)
-	{
-		try
-		{
-			std::ifstream fstream;
-			//fstream.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-			fstream.open(path_to_file, std::ios_base::binary | std::ios_base::in | std::ios::ate);
-      if (!fstream.good())
-        return false;
-			std::ifstream::pos_type file_size = fstream.tellg();
 
-			if(file_size > 1000000000)
-				return false;//don't go crazy
-			size_t file_size_t = static_cast<size_t>(file_size);
-
-			target_str.resize(file_size_t);
-
-			fstream.seekg (0, std::ios::beg);
-			fstream.read((char*)target_str.data(), target_str.size());
-      if (!fstream.good())
-        return false;
-
-			fstream.close();
-			return true;
-		}
-
-		catch(...)
-		{
-			return false;
-		}
-	}
 
 #ifdef WIN32
   typedef HANDLE native_filesystem_handle;
@@ -377,16 +389,18 @@ namespace file_io_utils
   typedef int native_filesystem_handle;
 #endif
 
+  // uses UTF-8 for unicode names for all systems
   inline bool open_and_lock_file(const std::string file_path, native_filesystem_handle& h_file)
   {
 #ifdef WIN32
-    h_file = ::CreateFileA(file_path.c_str(),                // name of the write
-      GENERIC_WRITE,          // open for writing
-      0,                      // do not share
-      NULL,                   // default security
-      OPEN_ALWAYS,             // create new file only
-      FILE_ATTRIBUTE_NORMAL,  // normal file
-      NULL);                  // no attr. template
+    std::wstring file_path_w = epee::string_encoding::utf8_to_wstring(file_path);
+    h_file = ::CreateFileW(file_path_w.c_str(), // name of the file
+      GENERIC_WRITE,                            // open for writing
+      0,                                        // do not share
+      NULL,                                     // default security
+      OPEN_ALWAYS,                              // create new file only
+      FILE_ATTRIBUTE_NORMAL,                    // normal file
+      NULL);                                    // no attr. template
     if (h_file == INVALID_HANDLE_VALUE)
       return false;
     else
@@ -462,20 +476,21 @@ namespace file_io_utils
   bool copy_file(const std::string& source, const std::string& destination)
   {
     boost::system::error_code ec;
-    boost::filesystem::copy_file(source, destination, ec);
+    boost::filesystem::copy_file(epee::string_encoding::utf8_to_wstring(source), epee::string_encoding::utf8_to_wstring(destination), ec);
     if (ec)
       return false;
     else
       return true;
   }
+
 	inline
 		bool append_string_to_file(const std::string& path_to_file, const std::string& str)
 	{
 		try
 		{
-			std::ofstream fstream;
+			boost::filesystem::ofstream fstream;
 			fstream.exceptions(std::ifstream::failbit | std::ifstream::badbit);
-			fstream.open(path_to_file.c_str(), std::ios_base::binary | std::ios_base::out | std::ios_base::app);
+			fstream.open(epee::string_encoding::utf8_to_wstring(path_to_file), std::ios_base::binary | std::ios_base::out | std::ios_base::app);
 			fstream << str;
 			fstream.close();
 			return true;
@@ -523,7 +538,7 @@ namespace file_io_utils
 	}
 	*/
 #ifdef WINDOWS_PLATFORM
-	inline bool get_folder_content(const std::string& path, std::list<WIN32_FIND_DATAA>& OUT target_list)
+	inline bool get_folder_content(const std::string& path, std::list<WIN32_FIND_DATAA>& target_list)
 	{
 		WIN32_FIND_DATAA find_data = {0};
 		HANDLE hfind = ::FindFirstFileA((path + "\\*.*").c_str(), &find_data);
@@ -541,13 +556,13 @@ namespace file_io_utils
 		return true;
 	}
 #endif
-	inline bool get_folder_content(const std::string& path, std::list<std::string>& OUT target_list, bool only_files = false)
+	inline bool get_folder_content(const std::string& path, std::list<std::string>& target_list, bool only_files = false)
 	{
 		try
 		{
 
 			boost::filesystem::directory_iterator end_itr; // default construction yields past-the-end
-			for ( boost::filesystem::directory_iterator itr( path ); itr != end_itr; ++itr )
+			for ( boost::filesystem::directory_iterator itr( epee::string_encoding::utf8_to_wstring(path) ); itr != end_itr; ++itr )
 			{
 				if ( only_files && boost::filesystem::is_directory(itr->status()) )
 				{

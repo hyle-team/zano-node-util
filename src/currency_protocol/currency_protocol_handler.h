@@ -19,10 +19,10 @@
 #undef LOG_DEFAULT_CHANNEL 
 #define LOG_DEFAULT_CHANNEL "currency_protocol" 
 
-PUSH_WARNINGS
+PUSH_VS_WARNINGS
 DISABLE_VS_WARNINGS(4355)
 
-#define ASYNC_RELAY_MODE
+#define ASYNC_RELAY_MODE // relay transactions asyncronously via m_relay_que
 
 namespace currency
 {
@@ -66,7 +66,12 @@ namespace currency
     uint64_t get_max_seen_height();
     virtual size_t get_synchronized_connections_count();
     virtual size_t get_synchronizing_connections_count();
+
     int64_t get_net_time_delta_median();
+    bool add_time_delta_and_check_time_sync(int64_t delta);
+    bool get_last_time_sync_difference(int64_t& last_median2local_time_difference, int64_t& last_ntp2local_time_difference); // returns true if differences in allowed bounds
+                                                                                                                             //-----------------------------------------------------------------------------------
+    void set_to_debug_mode(uint32_t ip);
 
   private:
     //----------------- commands handlers ----------------------------------------------
@@ -93,7 +98,6 @@ namespace currency
 
     nodetool::p2p_endpoint_stub<connection_context> m_p2p_stub;
     nodetool::i_p2p_endpoint<connection_context>* m_p2p;
-    std::atomic<uint32_t> m_syncronized_connections_count;
     std::atomic<bool> m_synchronized;
     std::atomic<bool> m_have_been_synchronized;
     std::atomic<uint64_t> m_max_height_seen;
@@ -108,26 +112,32 @@ namespace currency
     std::thread m_relay_que_thread;
     std::atomic<bool> m_want_stop;
 
+    std::deque<int64_t> m_time_deltas;
+    std::mutex m_time_deltas_lock;
+    int64_t m_last_median2local_time_difference;
+    int64_t m_last_ntp2local_time_difference;
+    uint32_t m_debug_ip_address;
+
     template<class t_parametr>
-      bool post_notify(typename t_parametr::request& arg, currency_connection_context& context)
-      {
-        LOG_PRINT_L2("[POST]" << typeid(t_parametr).name());
-        std::string blob;
-        epee::serialization::store_t_to_binary(arg, blob);
-        return m_p2p->invoke_notify_to_peer(t_parametr::ID, blob, context);
-      }
+    bool post_notify(typename t_parametr::request& arg, currency_connection_context& context)
+    {
+      LOG_PRINT_L3("[POST]" << typeid(t_parametr).name() << " to " << context);
+      std::string blob;
+      epee::serialization::store_t_to_binary(arg, blob);
+      return m_p2p->invoke_notify_to_peer(t_parametr::ID, blob, context);
+    }
 
-      template<class t_parametr>
-      bool relay_post_notify(typename t_parametr::request& arg, currency_connection_context& exlude_context)
-      {        
-        std::string arg_buff;
-        epee::serialization::store_t_to_binary(arg, arg_buff);
-        std::list<epee::net_utils::connection_context_base> relayed_peers;
-        bool r = m_p2p->relay_notify_to_all(t_parametr::ID, arg_buff, exlude_context, relayed_peers);
+    template<class t_parametr>
+    bool relay_post_notify(typename t_parametr::request& arg, currency_connection_context& exlude_context)
+    {        
+      std::string arg_buff;
+      epee::serialization::store_t_to_binary(arg, arg_buff);
+      std::list<epee::net_utils::connection_context_base> relayed_peers;
+      bool r = m_p2p->relay_notify_to_all(t_parametr::ID, arg_buff, exlude_context, relayed_peers);
 
-        LOG_PRINT_GREEN("[POST RELAY] " << typeid(t_parametr).name() << " relayed contexts list: " << ENDL << print_connection_context_list(relayed_peers), LOG_LEVEL_2);
-        return r;
-      }
+      LOG_PRINT_GREEN("[POST RELAY] " << typeid(t_parametr).name() << " to (" << relayed_peers.size() << "): " << print_connection_context_list(relayed_peers, ", "), LOG_LEVEL_2);
+      return r;
+    }
   };
 }
 
@@ -137,4 +147,4 @@ namespace currency
 #undef LOG_DEFAULT_CHANNEL 
 #define LOG_DEFAULT_CHANNEL NULL
 
-POP_WARNINGS
+POP_VS_WARNINGS

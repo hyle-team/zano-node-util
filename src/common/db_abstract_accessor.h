@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2018 Zano Project
+// Copyright (c) 2014-2019 Zano Project
 // Copyright (c) 2014-2018 The Louisdor Project
 // Copyright (c) 2012-2013 The Boolberry developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -75,25 +75,32 @@ namespace tools
       std::map<std::thread::id, std::vector<bool> > m_transactions_stack;
       std::atomic<bool> m_is_open;
       epee::shared_recursive_mutex& m_rwlock;
-
     public:      
       struct performance_data
       {
         epee::math_helper::average<uint64_t, 10> backend_set_pod_time;
         epee::math_helper::average<uint64_t, 10> backend_set_t_time;
         epee::math_helper::average<uint64_t, 10> set_serialize_t_time;
+        epee::math_helper::average<uint64_t, 10> backend_get_pod_time;
+        epee::math_helper::average<uint64_t, 10> backend_get_t_time;
+        epee::math_helper::average<uint64_t, 10> get_serialize_t_time;
       };
     private:
+      mutable performance_data m_gperformance_data;
       mutable std::unordered_map<container_handle, performance_data> m_performance_data_map;
     public:
-      basic_db_accessor(std::shared_ptr<i_db_backend> backend, epee::shared_recursive_mutex& rwlock) :m_backend(backend), m_rwlock(rwlock), m_is_open(false)
-      {}
+      basic_db_accessor(std::shared_ptr<i_db_backend> backend, epee::shared_recursive_mutex& rwlock)
+        : m_backend(backend), m_rwlock(rwlock), m_is_open(false)
+      {
+      }
+
       ~basic_db_accessor()
       {
         close();
       }
-
-      const performance_data& get_performance_data_for_handle(container_handle h) const  { return m_performance_data_map[h]; }
+      void reset_backend(std::shared_ptr<i_db_backend> backend) { m_backend = backend; }
+      performance_data& get_performance_data_for_handle(container_handle h) const  { return m_performance_data_map[h]; }
+      performance_data& get_performance_data_global() const { return m_gperformance_data; }
 
 
       bool bind_parent_container(i_db_parent_to_container_callabck* pcontainer)
@@ -235,8 +242,11 @@ namespace tools
       bool close()
       {
         m_is_open = false;
+        if (!m_backend)
+          return true;
         return m_backend->close();
       }
+
       bool open(const std::string& path, uint64_t cache_sz = CACHE_SIZE)
       {
         bool r = m_backend->open(path, cache_sz);
@@ -270,15 +280,23 @@ namespace tools
       template<class t_pod_key, class t_object>
       bool get_t_object(container_handle h, const t_pod_key& k, t_object& obj) const
       {
+        performance_data& m_performance_data = m_gperformance_data;
         //TRY_ENTRY();
         std::string res_buff;
         size_t sk = 0;
         const char* pk = key_to_ptr(k, sk);
 
+        TIME_MEASURE_START_PD(backend_get_t_time);
         if (!m_backend->get(h, pk, sk, res_buff))
           return false;
+        TIME_MEASURE_FINISH_PD(backend_get_t_time);
 
-        return t_unserializable_object_from_blob(obj, res_buff);
+
+        TIME_MEASURE_START_PD(get_serialize_t_time);
+        bool res = t_unserializable_object_from_blob(obj, res_buff);
+        TIME_MEASURE_FINISH_PD(get_serialize_t_time);
+
+        return res;
         //CATCH_ENTRY_L0("get_t_object_from_db", false);
       }
 
@@ -310,15 +328,18 @@ namespace tools
       bool get_pod_object(container_handle h, const t_pod_key& k, t_pod_object& obj) const
       {
         static_assert(std::is_pod<t_pod_object>::value, "t_pod_object must be a POD type.");
-
+        performance_data& m_performance_data = m_gperformance_data;
 
         //TRY_ENTRY();
         std::string res_buff;
         size_t sk = 0;
         const char* pk = key_to_ptr(k, sk);
 
+        TIME_MEASURE_START_PD(backend_get_pod_time);
         if (!m_backend->get(h, pk, sk, res_buff))
           return false;
+        TIME_MEASURE_FINISH_PD(backend_get_pod_time);
+
 
         CHECK_AND_ASSERT_MES(sizeof(t_pod_object) == res_buff.size(), false, "sizes missmath at get_pod_object_from_db(). returned size = "
           << res_buff.size() << "expected: " << sizeof(t_pod_object));
@@ -498,7 +519,9 @@ namespace tools
 
       ~basic_key_value_accessor()
       {
+        TRY_ENTRY();
         bdb.unbind_parent_container(this);
+        CATCH_ALL_DO_NOTHING();
       }
 
       virtual bool on_write_transaction_begin()
@@ -547,9 +570,27 @@ namespace tools
         m_set_profiler.m_name = container_name + ":set";
         m_explicit_get_profiler.m_name = container_name + ":explicit_get";
         m_explicit_set_profiler.m_name = container_name + ":explicit_set";
-        m_commit_profiler.m_name = container_name + ":commit";;
+        m_commit_profiler.m_name        = container_name + ":commit";
 #endif
         return bdb.get_backend()->open_container(container_name, m_h);
+      }
+
+      bool deinit()
+      {
+#ifdef ENABLE_PROFILING
+        m_get_profiler.m_name           = "";
+        m_set_profiler.m_name           = "";
+        m_explicit_get_profiler.m_name  = "";
+        m_explicit_set_profiler.m_name  = "";
+        m_commit_profiler.m_name        = "";
+#endif
+        bool r = true;
+        if (m_h)
+          r = bdb.get_backend()->close_container(m_h);
+        m_h = AUTO_VAL_INIT(m_h);
+        size_cache = 0;
+        size_cache_valid = false;
+        return r;
       }
 
       template<class t_cb>
@@ -629,27 +670,26 @@ namespace tools
       {
         return bdb.size(m_h);
       }
-      size_t clear()
+      
+      bool clear()
       {
-        bdb.clear(m_h);
+        bool result = bdb.clear(m_h);
         m_isolation.isolated_write_access<bool>([&](){
           size_cache_valid = false;
           return true;
         });
-        return true;
+        return result;
       }
 
       bool erase_validate(const t_key& k)
       {
-        auto res_ptr = this->get(k);
-        bdb.erase(m_h, k);
+        bool result = bdb.erase(m_h, k);
         m_isolation.isolated_write_access<bool>([&](){
           size_cache_valid = false;
           return true;
         });
-        return static_cast<bool>(res_ptr);
+        return result;
       }
-
 
       void erase(const t_key& k)
       {
@@ -710,7 +750,11 @@ namespace tools
       }
       ~cached_key_value_accessor()
       {
-        m_cache.clear(); //will clear cache isolated
+        NESTED_TRY_ENTRY();
+
+        m_cache.clear();  //will clear cache isolated
+
+        NESTED_CATCH_ENTRY(__func__);
       }
 
       void clear_cache() const 
@@ -784,14 +828,19 @@ namespace tools
         m_cache.erase(k);
       }
        
-      const performance_data& get_performance_data() const 
+      performance_data& get_performance_data() const 
       {
         return m_performance_data;
       }
-      const typename basic_db_accessor::performance_data& get_performance_data_native() const
+      typename basic_db_accessor::performance_data& get_performance_data_native() const
       {
         return base_class::bdb.get_performance_data_for_handle(base_class::m_h);
       }
+      typename basic_db_accessor::performance_data& get_performance_data_global() const
+      {
+        return base_class::bdb.get_performance_data_global();
+      }
+
     private:
       mutable performance_data m_performance_data;
     };
@@ -822,13 +871,10 @@ namespace tools
 
       operator t_value() const 
       {
-        static_assert(std::is_pod<t_value>::value, "t_value must be a POD type.");
+        std::shared_ptr<const t_value> value_ptr = m_accessor.template explicit_get<t_key, t_value, access_strategy_selector<is_t_strategy> >(m_key);
+        if (value_ptr.get())
+          return *value_ptr.get();
 
-        std::shared_ptr<const t_value> vptr = m_accessor.template explicit_get<t_key, t_value, access_strategy_selector<false> >(m_key);
-        if (vptr.get())
-        {
-          return *vptr.get();
-        }
         return AUTO_VAL_INIT(t_value());
       }
     };
@@ -870,27 +916,47 @@ namespace tools
     {
       typedef basic_key_value_accessor<composite_key<t_key, uint64_t>, t_value, is_t_access_strategy> basic_accessor_type;
 
-//      template<class t_key>
       solo_db_value<composite_key<t_key, guid_key>, uint64_t, basic_accessor_type>
-        get_counter_accessor(const t_key& container_id)
+      get_counter_accessor(const t_key& container_id)
       {
- 
         static_assert(std::is_pod<t_key>::value, "t_pod_key must be a POD type.");
         composite_key<t_key, guid_key> cc = { container_id, const_counter_suffix}; 
 
         return solo_db_value<composite_key<t_key, guid_key>, uint64_t, basic_accessor_type >(cc, *this);
       }
 
-//      template<class t_key>
       const solo_db_value<composite_key<t_key, guid_key>, uint64_t, basic_accessor_type >
-        get_counter_accessor(const t_key& container_id) const
+      get_counter_accessor(const t_key& container_id) const
       {
+        static_assert(std::is_pod<t_key>::value, "t_pod_key must be a POD type.");
+        composite_key<t_key, guid_key> cc = { container_id, const_counter_suffix };
 
-          static_assert(std::is_pod<t_key>::value, "t_pod_key must be a POD type.");
-          composite_key<t_key, guid_key> cc = { container_id, const_counter_suffix };
+        return solo_db_value<composite_key<t_key, guid_key>, uint64_t, basic_accessor_type >(cc, const_cast<basic_accessor_type&>(static_cast<const basic_accessor_type&>(*this)));
+      }
 
-          return solo_db_value<composite_key<t_key, guid_key>, uint64_t, basic_accessor_type >(cc, const_cast<basic_accessor_type&>(static_cast<const basic_accessor_type&>(*this)));
+      template<typename callback_t>
+      struct subitems_visitor : public i_db_callback
+      {
+        subitems_visitor(callback_t cb)
+          : m_callback(cb)
+        {}
+
+        virtual bool on_enum_item(uint64_t i, const void* key_data, uint64_t key_size, const void* value_data, uint64_t value_size) override
+        {
+          if (key_size != sizeof(composite_key<t_key, uint64_t>))
+            return true; // skip solo values containing items size
+
+          composite_key<t_key, uint64_t> key = AUTO_VAL_INIT(key);
+          key_from_ptr(key, key_data, key_size);
+
+          t_value value = AUTO_VAL_INIT(value);
+          access_strategy_selector<is_t_access_strategy>::from_buff_to_obj(value_data, value_size, value);
+
+          return m_callback(i, key.container_id, key.sufix, value);
         }
+
+        callback_t m_callback;
+      };
 
     public:
       basic_key_to_array_accessor(basic_db_accessor& db) : basic_key_value_accessor<composite_key<t_key, uint64_t>, t_value, is_t_access_strategy>(db)
@@ -948,6 +1014,14 @@ namespace tools
 
         counter = 0;
       }
+
+      template<typename callback_t>
+      void enumerate_subitems(callback_t callback) const
+      {
+        subitems_visitor<callback_t> visitor(callback);
+        basic_accessor_type::bdb.get_backend()->enumerate(basic_accessor_type::m_h, &visitor);
+      }
+
     };
 
     /************************************************************************/

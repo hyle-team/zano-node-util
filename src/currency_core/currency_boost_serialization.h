@@ -29,10 +29,18 @@ namespace boost
     template <class Archive>
     inline void serialize(Archive &a, currency::account_public_address &x, const boost::serialization::version_type ver)
     {
-      a & x.m_spend_public_key;
-      a & x.m_view_public_key;
+      //a & x.version;
+      a & x.flags;
+      a & x.spend_public_key;
+      a & x.view_public_key;
     }
 
+    template <class Archive>
+    inline void serialize(Archive &a, currency::account_public_address_old &x, const boost::serialization::version_type ver)
+    {
+      a & x.spend_public_key;
+      a & x.view_public_key;
+    }
 
     template <class Archive>
     inline void serialize(Archive &a, currency::txout_to_key &x, const boost::serialization::version_type ver)
@@ -46,6 +54,16 @@ namespace boost
     {
       a & x.minimum_sigs;
       a & x.keys;
+    }
+
+    template <class Archive>
+    inline void serialize(Archive &a, currency::txout_htlc &x, const boost::serialization::version_type ver)
+    {
+      a & x.expiration;
+      a & x.flags;
+      a & x.htlc_hash;
+      a & x.pkey_redeem;
+      a & x.pkey_refund;
     }
 
     template <class Archive>
@@ -76,6 +94,16 @@ namespace boost
     }
 
     template <class Archive>
+    inline void serialize(Archive &a, currency::txin_htlc &x, const boost::serialization::version_type ver)
+    {
+      a & x.amount;
+      a & x.etc_details;
+      a & x.hltc_origin;
+      a & x.k_image;
+      a & x.key_offsets;
+    }
+
+    template <class Archive>
     inline void serialize(Archive &a, currency::tx_out &x, const boost::serialization::version_type ver)
     {
       a & x.amount;
@@ -91,15 +119,29 @@ namespace boost
     }
 
     template <class Archive>
+    inline void serialize(Archive &a, currency::tx_payer_old &x, const boost::serialization::version_type ver)
+    {
+      a & x.acc_addr;
+    }
+
+    template <class Archive>
     inline void serialize(Archive &a, currency::tx_payer &x, const boost::serialization::version_type ver)
     {
       a & x.acc_addr;
     }
+
+    template <class Archive>
+    inline void serialize(Archive &a, currency::tx_receiver_old &x, const boost::serialization::version_type ver)
+    {
+      a & x.acc_addr;
+    }
+
     template <class Archive>
     inline void serialize(Archive &a, currency::tx_receiver &x, const boost::serialization::version_type ver)
     {
       a & x.acc_addr;
     }
+
     template <class Archive>
     inline void serialize(Archive &a, currency::tx_crypto_checksum &x, const boost::serialization::version_type ver)
     {
@@ -107,7 +149,7 @@ namespace boost
       a & x.derivation_hash;
     }
     template <class Archive>
-    inline void serialize(Archive &a, currency::tx_message &x, const boost::serialization::version_type ver)
+    inline void serialize(Archive &a, currency::tx_derivation_hint &x, const boost::serialization::version_type ver)
     {
       a & x.msg;
     }
@@ -135,19 +177,34 @@ namespace boost
       a & x.m_sign;
     }
 
-    
-      template <class Archive>
-      inline void serialize(Archive &a, currency::signed_parts &x, const boost::serialization::version_type ver)
-    {
-      a & x.n_outs;
-      a & x.n_extras;
-    }
-
     template <class Archive>
     inline void serialize(Archive &a, currency::extra_alias_entry &x, const boost::serialization::version_type ver)
     {
       a & x.m_alias;
       a & static_cast<currency::extra_alias_entry_base&>(x);
+    }
+
+    template <class Archive>
+    inline void serialize(Archive &a, currency::extra_alias_entry_base_old &x, const boost::serialization::version_type ver)
+    {
+      a & x.m_address;
+      a & x.m_text_comment;
+      a & x.m_view_key;
+      a & x.m_sign;
+    }
+
+    template <class Archive>
+    inline void serialize(Archive &a, currency::extra_alias_entry_old &x, const boost::serialization::version_type ver)
+    {
+      a & x.m_alias;
+      a & static_cast<currency::extra_alias_entry_base_old&>(x);
+    }
+
+    template <class Archive>
+    inline void serialize(Archive &a, currency::signed_parts &x, const boost::serialization::version_type ver)
+    {
+      a & x.n_outs;
+      a & x.n_extras;
     }
 
     template <class Archive>
@@ -171,7 +228,7 @@ namespace boost
     inline void serialize(Archive &a, currency::keypair &kp, const boost::serialization::version_type ver)
     {
       a & kp.pub;
-      a & kp.sec;
+      a & kp.sec; 
     }
 
     template <class Archive>
@@ -189,16 +246,25 @@ namespace boost
     {
       a & at.v;
     }
+
+    template <class Archive>
+    inline void serialize(Archive &a, currency::etc_tx_details_unlock_time2 &at, const boost::serialization::version_type ver)
+    {
+      a & at.unlock_time_array;
+    }
+
     template <class Archive>
     inline void serialize(Archive &a, currency::etc_tx_details_expiration_time &at, const boost::serialization::version_type ver)
     {
       a & at.v;
     }
+
     template <class Archive>
     inline void serialize(Archive &a, currency::etc_tx_details_flags &at, const boost::serialization::version_type ver)
     {
       a & at.v;
     }
+
     template <class Archive>
     inline void serialize(Archive &a, currency::etc_tx_time &at, const boost::serialization::version_type ver)
     {
@@ -206,7 +272,7 @@ namespace boost
     }
 
     template <class Archive>
-    inline void serialize(Archive &a, currency::etc_tx_derivation_hint &at, const boost::serialization::version_type ver)
+    inline void serialize(Archive &a, currency::etc_tx_flags16_t&at, const boost::serialization::version_type ver)
     {
       a & at.v;
     }

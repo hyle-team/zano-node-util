@@ -21,7 +21,7 @@
 #include "warnings.h"
 #include "crypto/hash.h"
 
-PUSH_WARNINGS
+PUSH_VS_WARNINGS
 DISABLE_VS_WARNINGS(4355)
 
 namespace currency
@@ -41,6 +41,7 @@ namespace currency
      core(i_currency_protocol* pprotocol);
      bool handle_get_objects(NOTIFY_REQUEST_GET_OBJECTS::request& arg, NOTIFY_RESPONSE_GET_OBJECTS::request& rsp, currency_connection_context& context)const ;
      bool on_idle();
+     bool handle_incoming_tx(const transaction& tx, tx_verification_context& tvc, bool kept_by_block, const crypto::hash& tx_hash_ = null_hash);
      bool handle_incoming_tx(const blobdata& tx_blob, tx_verification_context& tvc, bool kept_by_block);
      bool handle_incoming_block(const blobdata& block_blob, block_verification_context& bvc, bool update_miner_blocktemplate = true);
      bool handle_incoming_block(const block& b, block_verification_context& bvc, bool update_miner_blocktemplate = true);
@@ -53,7 +54,8 @@ namespace currency
 
      //-------------------- i_miner_handler -----------------------
      virtual bool handle_block_found(const block& b, block_verification_context* p_verification_result = nullptr);
-     virtual bool get_block_template(block& b, const account_public_address& adr, const account_public_address& stakeholder_address, wide_difficulty_type& diffic, uint64_t& height, const blobdata& ex_nonce, bool pos = false, const pos_entry& pe = pos_entry());
+     virtual bool get_block_template(const create_block_template_params& params, create_block_template_response& resp);
+     bool get_block_template(block& b, const account_public_address& adr, const account_public_address& stakeholder_address, wide_difficulty_type& diffic, uint64_t& height, const blobdata& ex_nonce, bool pos = false, const pos_entry& pe = pos_entry());
 
      miner& get_miner(){ return m_miner; }
      static void init_options(boost::program_options::options_description& desc);
@@ -81,6 +83,8 @@ namespace currency
      size_t get_alternative_blocks_count();
 
      void set_currency_protocol(i_currency_protocol* pprotocol);
+     void set_critical_error_handler(i_critical_error_handler *handler);
+     i_critical_error_handler* get_critical_error_handler() const { return m_critical_error_handler; }
      bool set_checkpoints(checkpoints&& chk_pts);
 
      bool get_pool_transactions(std::list<transaction>& txs);
@@ -116,12 +120,6 @@ namespace currency
      bool add_new_block(const block& b, block_verification_context& bvc);
      bool load_state_data();
      bool parse_tx_from_blob(transaction& tx, crypto::hash& tx_hash, const blobdata& blob);
-     bool check_tx_extra(const transaction& tx);
-
-     bool check_tx_syntax(const transaction& tx);
-     //check correct values, amounts and all lightweight checks not related with database
-     bool check_tx_semantic(const transaction& tx, bool kept_by_block);
-     //check if tx already in memory pool or in main blockchain
 
      bool is_key_image_spent(const crypto::key_image& key_im);
 
@@ -130,20 +128,25 @@ namespace currency
      bool update_miner_block_template();
      bool handle_command_line(const boost::program_options::variables_map& vm);
      bool on_update_blocktemplate_interval();
-     bool check_tx_inputs_keyimages_diff(const transaction& tx);
 
      void notify_blockchain_update_listeners();
 
+     bool check_if_free_space_critically_low(uint64_t* p_available_space = nullptr);
+     void check_free_space();
+     
 
      blockchain_storage m_blockchain_storage;
      tx_memory_pool m_mempool;
      i_currency_protocol* m_pprotocol;
+     i_critical_error_handler* m_critical_error_handler;
      critical_section m_incoming_tx_lock;
      miner m_miner;
      account_public_address m_miner_address;
      std::string m_config_folder;
+     uint64_t m_stop_after_height;
      currency_protocol_stub m_protocol_stub;
      math_helper::once_a_time_seconds<60*60*12, false> m_prune_alt_blocks_interval;
+     math_helper::once_a_time_seconds<60, true> m_check_free_space_interval;
      friend class tx_validate_inputs;
      std::atomic<bool> m_starter_message_showed;
 
@@ -152,4 +155,4 @@ namespace currency
    };
 }
 
-POP_WARNINGS
+POP_VS_WARNINGS

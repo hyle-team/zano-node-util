@@ -109,14 +109,15 @@ namespace misc_utils
 #endif
 	}
 
-#if defined(__GNUC__)
+
+#if defined(__GNUC__) && !defined(__ANDROID__)
 #include <execinfo.h>
 #include <boost/core/demangle.hpp>
 #endif
-  inline std::string print_trace()
+  inline std::string print_trace_default()
   {
     std::stringstream ss;
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !defined(__ANDROID__)
     ss << std::endl << "STACK" << std::endl;
     const size_t max_depth = 100;
     size_t stack_depth;
@@ -134,5 +135,33 @@ namespace misc_utils
 #endif
     return ss.str();
   }
+
+  typedef std::string (stack_retrieving_function_t)();
+
+  //
+  // To get stack trace call it with the defaults.
+  // 
+  inline std::string get_callstack(stack_retrieving_function_t* p_stack_retrieving_function_to_be_added = nullptr, bool remove_func = false)
+  {
+    static stack_retrieving_function_t* p_srf = nullptr;
+    
+    if (remove_func)
+    {
+      p_srf = nullptr;
+      return "";
+    }
+    
+    if (p_stack_retrieving_function_to_be_added != nullptr)
+    {
+      p_srf = p_stack_retrieving_function_to_be_added;
+      return "";
+    }
+
+    if (p_srf != nullptr)
+      return p_srf();
+
+    return print_trace_default();
+  }
+
 }
 }

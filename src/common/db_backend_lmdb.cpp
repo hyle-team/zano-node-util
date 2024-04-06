@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2018 Zano Project
+// Copyright (c) 2014-2019 Zano Project
 // Copyright (c) 2014-2018 The Louisdor Project 
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -7,10 +7,13 @@
 #include "misc_language.h"
 #include "string_coding.h"
 #include "profile_tools.h"
+#include "util.h"
 
 #define BUF_SIZE 1024
 
-#define CHECK_AND_ASSERT_MESS_LMDB_DB(rc, ret, mess) CHECK_AND_ASSERT_MES(res == MDB_SUCCESS, ret, "[DB ERROR]:(" << rc << ")" << mdb_strerror(rc) << ", [message]: " << mess);
+#define CHECK_AND_ASSERT_MESS_LMDB_DB(rc, ret, mess) CHECK_AND_ASSERT_MES(rc == MDB_SUCCESS, ret, "[DB ERROR]:(" << rc << ")" << mdb_strerror(rc) << ", [message]: " << mess);
+#define CHECK_AND_ASSERT_THROW_MESS_LMDB_DB(rc, mess) CHECK_AND_ASSERT_THROW_MES(rc == MDB_SUCCESS, "[DB ERROR]:(" << rc << ")" << mdb_strerror(rc) << ", [message]: " << mess);
+#define ASSERT_MES_AND_THROW_LMDB(rc, mess) ASSERT_MES_AND_THROW("[DB ERROR]:(" << rc << ")" << mdb_strerror(rc) << ", [message]: " << mess);
 
 #undef LOG_DEFAULT_CHANNEL 
 #define LOG_DEFAULT_CHANNEL "lmdb"
@@ -26,7 +29,11 @@ namespace tools
     }
     lmdb_db_backend::~lmdb_db_backend()
     {
-      close(); 
+      NESTED_TRY_ENTRY();
+
+      close();
+
+      NESTED_CATCH_ENTRY(__func__);
     }
 
     bool lmdb_db_backend::open(const std::string& path_, uint64_t cache_sz)
@@ -42,9 +49,7 @@ namespace tools
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_env_set_mapsize");
       
       m_path = path_;
-#ifdef WIN32
-      m_path = epee::string_encoding::convert_ansii_to_utf8(m_path);
-#endif
+      CHECK_AND_ASSERT_MES(tools::create_directories_if_necessary(m_path), false, "create_directories_if_necessary failed: " << m_path);
 
       res = mdb_env_open(m_penv, m_path.c_str(), MDB_NORDAHEAD , 0644);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_env_open, m_path=" << m_path);
@@ -54,13 +59,24 @@ namespace tools
 
     bool lmdb_db_backend::open_container(const std::string& name, container_handle& h)
     {
-
       MDB_dbi dbi = AUTO_VAL_INIT(dbi);
       begin_transaction();
       int res = mdb_dbi_open(get_current_tx(), name.c_str(), MDB_CREATE, &dbi);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_dbi_open with container name: " << name);
       commit_transaction();
       h = static_cast<container_handle>(dbi);
+      return true;
+    }
+
+    bool lmdb_db_backend::close_container(container_handle& h)
+    {
+      static const container_handle null_handle = AUTO_VAL_INIT(null_handle);
+      CHECK_AND_ASSERT_MES(h != null_handle, false, "close_container is called for null container handle");
+      MDB_dbi dbi = static_cast<MDB_dbi>(h);
+      begin_transaction();
+      mdb_dbi_close(m_penv, dbi);
+      commit_transaction();
+      h = null_handle;
       return true;
     }
 
@@ -104,8 +120,12 @@ namespace tools
         transactions_list& rtxlist = m_txs[std::this_thread::get_id()];
         MDB_txn* pparent_tx = nullptr;
         MDB_txn* p_new_tx = nullptr;
+        bool parent_read_only = false;
         if (rtxlist.size())
+        {
           pparent_tx = rtxlist.back().ptx;
+          parent_read_only = rtxlist.back().read_only;
+        }
 
 
         if (pparent_tx && read_only)
@@ -119,9 +139,20 @@ namespace tools
           if (read_only)
             flags += MDB_RDONLY;
 
+          //don't use parent tx in write transactions if parent tx was read-only (restriction in lmdb) 
+          //see "Nested transactions: Max 1 child, write txns only, no writemap"
+          if (pparent_tx && parent_read_only)
+            pparent_tx = nullptr;
+
           CHECK_AND_ASSERT_THROW_MES(m_penv, "m_penv==null, db closed");
           res = mdb_txn_begin(m_penv, pparent_tx, flags, &p_new_tx);
-          CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_txn_begin");
+          if(res != MDB_SUCCESS)
+          {
+            //Important: if mdb_txn_begin is failed need to unlock previously locked mutex
+            CRITICAL_SECTION_UNLOCK(m_write_exclusive_lock);
+            //throw exception to avoid regular code execution 
+            ASSERT_MES_AND_THROW_LMDB(res, "Unable to mdb_txn_begin");
+          }
 
           rtxlist.push_back(tx_entry());
           rtxlist.back().count = read_only ? 1 : 0;
@@ -295,13 +326,13 @@ namespace tools
       PROFILE_FUNC("lmdb_db_backend::set");
       int res = 0;
       MDB_val key = AUTO_VAL_INIT(key);
-      MDB_val data = AUTO_VAL_INIT(data);
+      MDB_val data[2] = {}; // mdb_put may access data[1] if some flags are set, this may trigger static code analizers, so here we allocate two elements to avoid it
       key.mv_data = (void*)k;
       key.mv_size = ks;
-      data.mv_data = (void*)v;
-      data.mv_size = vs;
+      data[0].mv_data = (void*)v;
+      data[0].mv_size = vs;
 
-      res = mdb_put(get_current_tx(), static_cast<MDB_dbi>(h), &key, &data, 0);
+      res = mdb_put(get_current_tx(), static_cast<MDB_dbi>(h), &key, data, 0);
       CHECK_AND_ASSERT_MESS_LMDB_DB(res, false, "Unable to mdb_put");
       return true;
     }
@@ -358,6 +389,10 @@ namespace tools
         }
       }
       return true;
+    }
+    const char* lmdb_db_backend::name()
+    {
+      return "lmdb";
     }
   }
 }

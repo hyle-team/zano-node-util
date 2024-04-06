@@ -10,6 +10,7 @@
 #include <mutex>
 #include <vector>
 #include <string>
+#include <algorithm>
 
 #include "common/pod-class.h"
 #include "generic-ops.h"
@@ -17,7 +18,7 @@
 #include "warnings.h"
 
 
-PUSH_WARNINGS
+PUSH_GCC_WARNINGS
 DISABLE_CLANG_WARNING(unused-private-field)
 
 
@@ -73,10 +74,10 @@ namespace crypto {
 
     static void generate_keys(public_key &, secret_key &);
     friend void generate_keys(public_key &, secret_key &);
-    static void generate_brain_keys(public_key &, secret_key &, std::string& seed, size_t brain_wallet_seed_size);
-    friend void generate_brain_keys(public_key &, secret_key &, std::string& seed, size_t brain_wallet_seed_size);
-    static void keys_from_default(unsigned char* a_part, public_key &pub, secret_key &sec, size_t brain_wallet_seed_size);
-    friend void keys_from_default(unsigned char* a_part, public_key &pub, secret_key &sec, size_t brain_wallet_seed_size);
+    static void generate_seed_keys(public_key &pub, secret_key &sec, std::vector<unsigned char>& keys_seed_binary, size_t keys_seed_binary_size);
+    friend void generate_seed_keys(public_key &pub, secret_key &sec, std::vector<unsigned char>& keys_seed_binary, size_t keys_seed_binary_size);
+    static void keys_from_default(const unsigned char* a_part, public_key &pub, secret_key &sec, size_t keys_seed_binary_size);
+    friend void keys_from_default(const unsigned char* a_part, public_key &pub, secret_key &sec, size_t keys_seed_binary_size);
     static void dependent_key(const secret_key& first, secret_key& second);
     friend void dependent_key(const secret_key& first, secret_key& second);
     static bool check_key(const public_key &);
@@ -135,14 +136,14 @@ namespace crypto {
     crypto_ops::generate_keys(pub, sec);
   }
 
-  inline void generate_brain_keys(public_key &pub, secret_key &sec, std::string& seed, size_t brain_wallet_seed_size) {
-    crypto_ops::generate_brain_keys(pub, sec, seed,  brain_wallet_seed_size);
+  inline void generate_seed_keys(public_key &pub, secret_key &sec, std::vector<unsigned char>& keys_seed_binary, size_t keys_seed_binary_size)
+  {
+    crypto_ops::generate_seed_keys(pub, sec, keys_seed_binary, keys_seed_binary_size);
   }
 
-
-  inline void keys_from_default(unsigned char* a_part, public_key &pub, secret_key &sec, size_t brain_wallet_seed_size)
+  inline void keys_from_default(const unsigned char* a_part, public_key &pub, secret_key &sec, size_t keys_seed_binary_size)
   {
-    crypto_ops::keys_from_default(a_part, pub, sec,  brain_wallet_seed_size);
+    crypto_ops::keys_from_default(a_part, pub, sec, keys_seed_binary_size);
   }
 
   inline void dependent_key(const secret_key& first, secret_key& second){
@@ -226,13 +227,76 @@ namespace crypto {
     return check_ring_signature(prefix_hash, image, pubs.data(), pubs.size(), sig);
   }
 
-}
+  class stream_cn_hash
+  {
+  public:
+    static constexpr size_t DATA_BLOCK_SIZE = 1024 * 1024;
 
+    stream_cn_hash()
+      : m_buffer(HASH_SIZE + DATA_BLOCK_SIZE, '\0')
+      , m_p_hash(const_cast<hash*>(reinterpret_cast<const hash*>(m_buffer.data())))
+      , m_p_data(const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(m_buffer.data())) + HASH_SIZE)
+      , m_ready(false)
+      , m_data_used(0)
+    {
+      m_ready = true;
+    }
 
-POD_MAKE_COMPARABLE(crypto, public_key)
+    bool update(const void* data, size_t size)
+    {
+      if (!m_ready)
+        return false;
+
+      const uint8_t* p_source_data = reinterpret_cast<const uint8_t*>(data);
+
+      while(size > 0)
+      {
+        // fill the buffer up
+        size_t bytes_to_copy = std::min(size, DATA_BLOCK_SIZE - m_data_used);
+        memcpy(m_p_data + m_data_used, p_source_data, bytes_to_copy);
+        m_data_used += bytes_to_copy;
+        p_source_data += bytes_to_copy;
+        size -= bytes_to_copy;
+
+        if (m_data_used == DATA_BLOCK_SIZE)
+        {
+          // calc imtermediate hash of the whole buffer and put the result into the beginning of the buffer
+          *m_p_hash = cn_fast_hash(m_buffer.data(), HASH_SIZE + m_data_used);
+          // clear data buffer for new bytes
+          memset(m_p_data, 0, DATA_BLOCK_SIZE);
+          m_data_used = 0;
+        }
+
+        // repeat if there are source bytes left
+      }
+
+      return true;
+    }
+
+    hash calculate_hash()
+    {
+      if (m_data_used == 0)
+        return *m_p_hash;
+
+      m_ready = false;
+      return cn_fast_hash(m_buffer.data(), HASH_SIZE + m_data_used);
+    }
+  
+  private:
+    const std::string m_buffer;
+    hash* const     m_p_hash;
+    uint8_t* const  m_p_data;
+    size_t          m_data_used;
+    bool            m_ready;
+  }; // class stream_cn_hash
+
+} // namespace crypto
+
+POD_MAKE_HASHABLE(crypto, public_key)
 POD_MAKE_COMPARABLE(crypto, secret_key)
 POD_MAKE_HASHABLE(crypto, key_image)
 POD_MAKE_COMPARABLE(crypto, signature)
 POD_MAKE_COMPARABLE(crypto, key_derivation)
 POD_MAKE_LESS_OPERATOR(crypto, hash)
 POD_MAKE_LESS_OPERATOR(crypto, key_image)
+POP_GCC_WARNINGS

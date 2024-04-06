@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2018 Zano Project
+// Copyright (c) 2014-2019 Zano Project
 // Copyright (c) 2014-2018 The Louisdor Project
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -38,6 +38,7 @@ namespace tools
       virtual void abort_transaction()=0;
       virtual bool open(const std::string& path, uint64_t cache_sz = CACHE_SIZE) = 0;
       virtual bool open_container(const std::string& name, container_handle& h)=0;
+      virtual bool close_container(container_handle& h) = 0;
       virtual bool erase(container_handle h, const char* k, size_t s) = 0;
       virtual uint64_t size(container_handle h) = 0;
       virtual bool get(container_handle h, const char* k, size_t s, std::string& res_buff) = 0;
@@ -45,6 +46,7 @@ namespace tools
       virtual bool clear(container_handle h) = 0;
       virtual bool enumerate(container_handle h, i_db_callback* pcb)=0;
       virtual bool get_stat_info(stat_info& si) = 0;
+      virtual const char* name()=0;
       virtual ~i_db_backend(){};
     };
   }

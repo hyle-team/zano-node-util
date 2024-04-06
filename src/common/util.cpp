@@ -10,6 +10,7 @@ using namespace epee;
 
 #include "util.h"
 #include "currency_core/currency_config.h"
+#include "version.h"
 
 #ifdef WIN32
 #include <windows.h>
@@ -21,6 +22,9 @@ using namespace epee;
 #include <sys/utsname.h>
 #endif
 
+#include <boost/asio.hpp>
+
+#include "string_coding.h"
 
 namespace tools
 {
@@ -361,7 +365,69 @@ namespace tools
       return pszOS;
     }
   }
-#else
+
+  void signal_handler::GenerateCrashDump(EXCEPTION_POINTERS *pep /* = NULL*/)
+  {
+    SYSTEMTIME sysTime = { 0 };
+    GetSystemTime(&sysTime);
+    // get the computer name
+    char compName[MAX_COMPUTERNAME_LENGTH + 1] = { 0 };
+    DWORD compNameLen = ARRAYSIZE(compName);
+    GetComputerNameA(compName, &compNameLen);
+    // build the filename: APPNAME_COMPUTERNAME_DATE_TIME.DMP
+    char path[MAX_PATH*10] = { 0 };
+    std::string folder = epee::log_space::log_singletone::get_default_log_folder();
+    sprintf_s(path, ARRAYSIZE(path),"%s\\crashdump_" PROJECT_VERSION_LONG "_%s_%04u-%02u-%02u_%02u-%02u-%02u.dmp",
+      folder.c_str(), compName, sysTime.wYear, sysTime.wMonth, sysTime.wDay,
+      sysTime.wHour, sysTime.wMinute, sysTime.wSecond);
+
+    HANDLE hFile = CreateFileA(path, GENERIC_READ | GENERIC_WRITE,
+      0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+
+    if ((hFile != NULL) && (hFile != INVALID_HANDLE_VALUE))
+    {
+      // Create the minidump 
+      MINIDUMP_EXCEPTION_INFORMATION mdei;
+
+      mdei.ThreadId = GetCurrentThreadId();
+      mdei.ExceptionPointers = pep;
+      mdei.ClientPointers = FALSE;
+
+      MINIDUMP_CALLBACK_INFORMATION mci;
+
+      mci.CallbackRoutine = (MINIDUMP_CALLBACK_ROUTINE)MyMiniDumpCallback;
+      mci.CallbackParam = 0;
+
+      MINIDUMP_TYPE mdt = (MINIDUMP_TYPE)(MiniDumpWithPrivateReadWriteMemory |
+        MiniDumpWithDataSegs |
+        MiniDumpWithHandleData |
+        MiniDumpWithFullMemoryInfo |
+        MiniDumpWithThreadInfo |
+        MiniDumpWithUnloadedModules);
+
+      BOOL rv = MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+        hFile, mdt, (pep != 0) ? &mdei : 0, 0, &mci);
+
+      if (!rv)
+      {
+        LOG_ERROR("Minidump file create FAILED(error " << GetLastError() << ") on path: " <<  path);
+      }
+      else
+      {
+        LOG_PRINT_L0("Minidump file created on path: " << path);
+      }
+      // Close the file 
+      CloseHandle(hFile);
+    }
+    else
+    {
+      LOG_ERROR("Minidump FAILED to create file (error " << GetLastError() << ") on path: " << path);
+    }
+  }
+
+
+
+#else // ifdef WIN32
 std::string get_nix_version_display_string()
 {
   utsname un;
@@ -386,18 +452,22 @@ std::string get_nix_version_display_string()
 
 
 #ifdef WIN32
-  std::string get_special_folder_path(int nfolder, bool iscreate)
+  std::wstring get_special_folder_path_w(int nfolder, bool iscreate)
   {
-    namespace fs = boost::filesystem;
-    char psz_path[MAX_PATH] = "";
+    wchar_t psz_path[MAX_PATH] = L"";
 
-    if(SHGetSpecialFolderPathA(NULL, psz_path, nfolder, iscreate))
+    if (SHGetSpecialFolderPathW(NULL, psz_path, nfolder, iscreate))
     {
       return psz_path;
     }
 
-    LOG_ERROR("SHGetSpecialFolderPathA() failed, could not obtain requested path.");
-    return "";
+    LOG_ERROR("SHGetSpecialFolderPathW(" << nfolder << ", " << iscreate << ") failed, could not obtain requested path.");
+    return L"";
+  }
+
+  std::string get_special_folder_path_utf8(int nfolder, bool iscreate)
+  {
+    return epee::string_encoding::wstring_to_utf8(get_special_folder_path_w(nfolder, iscreate));
   }
 #endif
 
@@ -412,9 +482,9 @@ std::string get_nix_version_display_string()
 #ifdef WIN32
     // Windows
 #ifdef _M_X64
-    config_folder = get_special_folder_path(CSIDL_APPDATA, true) + "/" + CURRENCY_NAME_SHORT;
+    config_folder = get_special_folder_path_utf8(CSIDL_APPDATA, true) + "/" + CURRENCY_NAME_SHORT;
 #else 
-    config_folder = get_special_folder_path(CSIDL_APPDATA, true) + "/" + CURRENCY_NAME_SHORT + "-x86";
+    config_folder = get_special_folder_path_utf8(CSIDL_APPDATA, true) + "/" + CURRENCY_NAME_SHORT + "-x86";
 #endif 
 #else
     std::string pathRet;
@@ -454,7 +524,7 @@ std::string get_nix_version_display_string()
     std::string wallets_dir;
 #ifdef WIN32
     // Windows
-    wallets_dir = get_special_folder_path(CSIDL_PERSONAL, true) + "/" + CURRENCY_NAME_BASE;
+    wallets_dir = get_special_folder_path_utf8(CSIDL_PERSONAL, true) + "/" + CURRENCY_NAME_BASE;
 #else
     std::string pathRet;
     char* pszHome = getenv("HOME");
@@ -489,7 +559,7 @@ std::string get_nix_version_display_string()
   {
     namespace fs = boost::filesystem;
     boost::system::error_code ec;
-    fs::path fs_path(path);
+    fs::path fs_path = epee::string_encoding::utf8_to_wstring(path);
     if (fs::is_directory(fs_path, ec))
     {
       return true;
@@ -588,4 +658,97 @@ std::string get_nix_version_display_string()
     return static_cast<uint64_t>(in.tellg());
   }
 
-}
+  bool check_remote_client_version(const std::string& client_ver)
+  {
+    std::string v = client_ver.substr(0, client_ver.find('[')); // remove commit id
+    v = v.substr(0, v.rfind('.')); // remove build number
+
+    int v_major = 0, v_minor = 0, v_revision = 0;
+
+    size_t dot_pos = v.find('.');
+    if (dot_pos == std::string::npos || !epee::string_tools::string_to_num_fast(v.substr(0, dot_pos), v_major))
+      return false;
+
+    v = v.substr(dot_pos + 1);
+    dot_pos = v.find('.');
+    if (!epee::string_tools::string_to_num_fast(v.substr(0, dot_pos), v_minor))
+      return false;
+
+    if (dot_pos != std::string::npos)
+    {
+      // revision
+      v = v.substr(dot_pos + 1);
+      if (!epee::string_tools::string_to_num_fast(v, v_revision))
+        return false;
+    }
+
+    // got v_major, v_minor, v_revision
+
+    // allow 1.1.x and greater
+  
+    if (v_major < 1)
+      return false;
+
+    if (v_major == 1 && v_minor < 1)
+      return false;
+
+    return true;
+  }
+
+  //this code was taken from https://stackoverflow.com/a/8594696/5566653 
+  //credits goes to @nijansen: https://stackoverflow.com/users/1056003/nijansen 
+  bool copy_dir( boost::filesystem::path const & source, boost::filesystem::path const & destination)
+  {
+    namespace fs = boost::filesystem;
+    try
+    {
+      // Check whether the function call is valid
+      if (!fs::exists(source) ||!fs::is_directory(source))
+      {
+        LOG_ERROR("Source directory " << source.string() << " does not exist or is not a directory.");
+        return false;
+      }
+      if (!fs::exists(destination))
+      {
+        if (!fs::create_directory(destination))
+        {
+          LOG_ERROR("Unable to create destination directory" << destination.string());
+          return false;
+        }
+      }
+      // Create the destination directory
+    }
+    catch (fs::filesystem_error const & e)
+    {
+      LOG_ERROR("Exception: " << e.what());
+      return false;
+    }
+    // Iterate through the source directory
+    for (fs::directory_iterator file(source); file != fs::directory_iterator(); ++file)
+    {
+      try
+      {
+        fs::path current(file->path());
+        if (fs::is_directory(current))
+        {
+          // Found directory: Recursion
+          if (!copy_dir(current, destination / current.filename()))
+          {
+            return false;
+          }
+        }
+        else
+        {
+          // Found file: Copy
+          fs::copy_file( current, destination / current.filename());
+        }
+      }
+      catch (fs::filesystem_error const & e)
+      {
+        LOG_ERROR("Exception: " << e.what());
+      }
+    }
+    return true;
+  }
+
+} // namespace tools

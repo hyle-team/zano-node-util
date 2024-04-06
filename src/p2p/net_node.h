@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2018 Zano Project
+// Copyright (c) 2014-2019 Zano Project
 // Copyright (c) 2014-2018 The Louisdor Project
 // Copyright (c) 2012-2013 The Cryptonote developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -32,10 +32,11 @@ using namespace epee;
 
 #undef LOG_DEFAULT_CHANNEL 
 #define LOG_DEFAULT_CHANNEL "p2p" 
+ENABLE_CHANNEL_BY_DEFAULT(LOG_DEFAULT_CHANNEL);
 
 #define CURRENT_P2P_STORAGE_ARCHIVE_VER    (CURRENCY_FORMATION_VERSION+13)
 
-PUSH_WARNINGS
+PUSH_VS_WARNINGS
 DISABLE_VS_WARNINGS(4355)
 
 namespace nodetool
@@ -70,7 +71,18 @@ namespace nodetool
                                                         m_alert_mode(0), 
                                                         m_maintainers_entry_local(AUTO_VAL_INIT(m_maintainers_entry_local)),
                                                         m_maintainers_info_local(AUTO_VAL_INIT(m_maintainers_info_local)), 
-                                                        m_startup_time(time(nullptr))
+                                                        m_startup_time(time(nullptr)),
+                                                        m_config{},
+                                                        m_have_address(false),
+                                                        m_first_connection_maker_call(false),
+                                                        m_listenning_port{},
+                                                        m_external_port{},
+                                                        m_ip_address{},
+                                                        m_last_stat_request_time{},
+                                                        m_use_only_priority_peers(false),
+                                                        m_peer_livetime{},
+                                                        m_debug_requests_enabled(false),
+                                                        m_ip_auto_blocking_enabled(false)
     {}
 
     static void init_options(boost::program_options::options_description& desc);
@@ -121,11 +133,14 @@ namespace nodetool
       HANDLE_INVOKE_T2(COMMAND_TIMED_SYNC, &node_server::handle_timed_sync)
       HANDLE_INVOKE_T2(COMMAND_PING, &node_server::handle_ping)
 #ifdef ALLOW_DEBUG_COMMANDS
-      HANDLE_INVOKE_T2(COMMAND_REQUEST_STAT_INFO, &node_server::handle_get_stat_info)
-      HANDLE_INVOKE_T2(COMMAND_REQUEST_NETWORK_STATE, &node_server::handle_get_network_state)
-      HANDLE_INVOKE_T2(COMMAND_REQUEST_PEER_ID, &node_server::handle_get_peer_id)
-      HANDLE_INVOKE_T2(COMMAND_REQUEST_LOG, &node_server::handle_request_log)
-      HANDLE_INVOKE_T2(COMMAND_SET_LOG_LEVEL, &node_server::handle_set_log_level)
+      if (m_debug_requests_enabled)
+      {
+        HANDLE_INVOKE_T2(COMMAND_REQUEST_STAT_INFO, &node_server::handle_get_stat_info)
+        HANDLE_INVOKE_T2(COMMAND_REQUEST_NETWORK_STATE, &node_server::handle_get_network_state)
+        HANDLE_INVOKE_T2(COMMAND_REQUEST_PEER_ID, &node_server::handle_get_peer_id)
+        HANDLE_INVOKE_T2(COMMAND_REQUEST_LOG, &node_server::handle_request_log)
+        HANDLE_INVOKE_T2(COMMAND_SET_LOG_LEVEL, &node_server::handle_set_log_level)
+      }
 #endif
       CHAIN_INVOKE_MAP_TO_OBJ_FORCE_CONTEXT(m_payload_handler, typename t_payload_net_handler::connection_context&)
     END_INVOKE_MAP2()
@@ -185,10 +200,11 @@ namespace nodetool
     bool make_new_connection_from_peerlist(bool use_white_list);
     bool try_to_connect_and_handshake_with_new_peer(const net_address& na, bool just_take_peerlist = false, uint64_t last_seen_stamp = 0, bool white = true);
     size_t get_random_index_with_fixed_probability(size_t max_index);
+    bool is_peer_id_used(const peerid_type id);
     bool is_peer_used(const peerlist_entry& peer);
     bool is_addr_connected(const net_address& peer);  
     template<class t_callback>
-    bool try_ping(basic_node_data& node_data, p2p_connection_context& context, t_callback cb);
+    bool try_ping(basic_node_data& node_data, p2p_connection_context& context, const t_callback& cb);
     bool make_expected_connections_count(bool white_list, size_t expected_connections);
     void cache_connect_fail_info(const net_address& addr);
     bool is_addr_recently_failed(const net_address& addr);
@@ -200,6 +216,8 @@ namespace nodetool
     bool urgent_alert_worker();
     bool critical_alert_worker();
     bool remove_dead_connections();
+    bool is_ip_good_for_adding_to_peerlist(uint32_t adress);
+    bool is_ip_in_blacklist(uint32_t adress);
 
 
     //debug functions
@@ -229,7 +247,10 @@ namespace nodetool
     bool m_allow_local_ip;
     bool m_hide_my_port;
     bool m_offline_mode;
+    bool m_debug_requests_enabled;
+    bool m_ip_auto_blocking_enabled;
     uint64_t m_startup_time;
+
 
     //critical_section m_connections_lock;
     //connections_indexed_container m_connections;
@@ -286,4 +307,4 @@ namespace nodetool
 #undef LOG_DEFAULT_CHANNEL
 #define LOG_DEFAULT_CHANNEL NULL
 
-POP_WARNINGS
+POP_VS_WARNINGS

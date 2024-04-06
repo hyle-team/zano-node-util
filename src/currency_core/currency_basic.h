@@ -1,4 +1,4 @@
-// Copyright (c) 2014-2018 Zano Project
+// Copyright (c) 2014-2019 Zano Project
 // Copyright (c) 2014-2018 The Louisdor Project
 // Copyright (c) 2012-2013 The Cryptonote developers
 // Copyright (c) 2014-2015 The Boolberry developers
@@ -15,7 +15,7 @@
 #include <boost/mpl/unique.hpp>
 #include <boost/mpl/list.hpp>
 #include <boost/mpl/equal.hpp>
-#include <boost/mpl/vector.hpp>
+#include <boost/mpl/vector/vector30.hpp>
 #include <boost/type_traits/is_same.hpp>
 
 #include <vector>
@@ -51,31 +51,83 @@ namespace currency
   const static crypto::signature null_sig = AUTO_VAL_INIT(null_sig);
   const static crypto::key_derivation null_derivation = AUTO_VAL_INIT(null_derivation);
 
+  const static crypto::hash gdefault_genesis = epee::string_tools::hex_to_pod<crypto::hash>("CC608F59F8080E2FBFE3C8C80EB6E6A953D47CF2D6AEBD345BADA3A1CAB99852");
 
+  typedef std::string payment_id_t;
 
 
   /************************************************************************/
   /*                                                                      */
   /************************************************************************/
   
-  //since structure used in blockchain as a key accessor, then be sure that there is no padding inside
+//since structure used in blockchain as a key accessor, then be sure that there is no padding inside
+#pragma pack(push, 1)
+  struct account_public_address_old
+  {
+    crypto::public_key spend_public_key;
+    crypto::public_key view_public_key;
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(spend_public_key)
+      FIELD(view_public_key)
+    END_SERIALIZE()
+
+    BEGIN_KV_SERIALIZE_MAP()
+      KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE_N(spend_public_key, "m_spend_public_key")
+      KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE_N(view_public_key, "m_view_public_key")
+    END_KV_SERIALIZE_MAP()
+  };
+#pragma pack(pop)
+
+
+#define ACCOUNT_PUBLIC_ADDRESS_SERIZALIZATION_VER 1
+
+#define ACCOUNT_PUBLIC_ADDRESS_FLAG_AUDITABLE 0x01 // auditable address
+
+//since structure used in blockchain as a key accessor, then be sure that there is no padding inside
 #pragma pack(push, 1)
   struct account_public_address
   {
-    crypto::public_key m_spend_public_key;
-    crypto::public_key m_view_public_key;
+    crypto::public_key spend_public_key;
+    crypto::public_key view_public_key;
+    uint8_t flags;
 
+    DEFINE_SERIALIZATION_VERSION(ACCOUNT_PUBLIC_ADDRESS_SERIZALIZATION_VER)
     BEGIN_SERIALIZE_OBJECT()
-      FIELD(m_spend_public_key)
-      FIELD(m_view_public_key)
+      FIELD(spend_public_key)
+      FIELD(view_public_key)
+      FIELD(flags)
     END_SERIALIZE()
 
-      BEGIN_KV_SERIALIZE_MAP()
-        KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE(m_spend_public_key)
-        KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE(m_view_public_key)
-      END_KV_SERIALIZE_MAP()
+    BEGIN_KV_SERIALIZE_MAP()
+      KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE_N(spend_public_key, "m_spend_public_key")
+      KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE_N(view_public_key, "m_view_public_key")
+      KV_SERIALIZE(flags)
+    END_KV_SERIALIZE_MAP()
+
+    bool is_auditable() const
+    {
+      return (flags & ACCOUNT_PUBLIC_ADDRESS_FLAG_AUDITABLE) != 0;
+    }
+
+    static account_public_address from_old(const account_public_address_old& rhs)
+    {
+      account_public_address result = AUTO_VAL_INIT(result);
+      result.spend_public_key = rhs.spend_public_key;
+      result.view_public_key = rhs.view_public_key;
+      return result;
+    }
+
+    account_public_address_old to_old() const
+    {
+      account_public_address_old result = AUTO_VAL_INIT(result);
+      result.spend_public_key = spend_public_key;
+      result.view_public_key = view_public_key;
+      return result;
+    }
   };
 #pragma pack(pop)
+
 
   const static account_public_address null_pub_addr = AUTO_VAL_INIT(null_pub_addr);
 
@@ -139,7 +191,7 @@ namespace currency
     END_SERIALIZE()
   };
 
-  typedef boost::variant<uint64_t, ref_by_id> txout_v;
+  typedef boost::variant<uint64_t, ref_by_id> txout_ref_v;
   
 
   struct signed_parts
@@ -159,7 +211,7 @@ namespace currency
   struct txin_to_key
   {
     uint64_t amount;
-    std::vector<txout_v> key_offsets;
+    std::vector<txout_ref_v> key_offsets;
     crypto::key_image k_image;                    // double spending protection
     std::vector<txin_etc_details_v> etc_details;  //this flag used when TX_FLAG_SIGNATURE_MODE_SEPARATE flag is set, point to which amount of outputs(starting from zero) used in signature
 
@@ -168,6 +220,15 @@ namespace currency
       FIELD(key_offsets)
       FIELD(k_image)
       FIELD(etc_details)
+    END_SERIALIZE()
+  };
+
+  struct txin_htlc: public txin_to_key
+  {
+    std::string hltc_origin;
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(hltc_origin)
+      FIELDS(*static_cast<txin_to_key*>(this))
     END_SERIALIZE()
   };
 
@@ -197,9 +258,28 @@ namespace currency
     END_SERIALIZE()
   };
 
-  typedef boost::variant<txin_gen, txin_to_key, txin_multisig> txin_v;
+#define CURRENCY_TXOUT_HTLC_FLAGS_HASH_TYPE_MASK   0x01 // 0 - SHA256, 1 - RIPEMD160
 
-  typedef boost::variant<txout_to_key, txout_multisig> txout_target_v;
+  struct txout_htlc
+  {
+    crypto::hash htlc_hash;
+    uint8_t flags;      //select type of the hash, may be some extra info in future
+    uint64_t expiration; 
+    crypto::public_key pkey_redeem; //works before expiration
+    crypto::public_key pkey_refund; //works after expiration
+
+    BEGIN_SERIALIZE_OBJECT()
+      FIELD(htlc_hash)
+      FIELD(flags)
+      VARINT_FIELD(expiration)
+      FIELD(pkey_redeem)
+      FIELD(pkey_refund)
+    END_SERIALIZE()
+  };
+
+  typedef boost::variant<txin_gen, txin_to_key, txin_multisig, txin_htlc> txin_v;
+
+  typedef boost::variant<txout_to_key, txout_multisig, txout_htlc> txout_target_v;
 
   //typedef std::pair<uint64_t, txout> out_t;
   struct tx_out
@@ -224,9 +304,30 @@ namespace currency
     END_SERIALIZE()
   };
 
+  struct tx_payer_old
+  {
+    account_public_address_old acc_addr;
+
+    BEGIN_SERIALIZE()
+      FIELD(acc_addr)
+    END_SERIALIZE()
+  };
+
   struct tx_payer
   {
-    account_public_address acc_addr;
+    tx_payer() = default;
+    tx_payer(const tx_payer_old& old) : acc_addr(account_public_address::from_old(old.acc_addr)) {}
+
+    account_public_address acc_addr{};
+
+    BEGIN_SERIALIZE()
+      FIELD(acc_addr)
+    END_SERIALIZE()
+  };
+
+  struct tx_receiver_old
+  {
+    account_public_address_old acc_addr;
 
     BEGIN_SERIALIZE()
       FIELD(acc_addr)
@@ -235,7 +336,10 @@ namespace currency
 
   struct tx_receiver
   {
-    account_public_address acc_addr;
+    tx_receiver() = default;
+    tx_receiver(const tx_receiver_old& old) : acc_addr(account_public_address::from_old(old.acc_addr)) {}
+
+    account_public_address acc_addr{};
 
     BEGIN_SERIALIZE()
       FIELD(acc_addr)
@@ -255,13 +359,13 @@ namespace currency
     END_SERIALIZE()
   };
 
-  struct tx_message
+  struct tx_derivation_hint
   {
     std::string msg;
 
     BEGIN_SERIALIZE()
       FIELD(msg)
-      END_SERIALIZE()
+    END_SERIALIZE()
   };
 
   struct tx_service_attachment
@@ -279,11 +383,25 @@ namespace currency
       FIELD(security)
       FIELD(flags)
     END_SERIALIZE()
+
+    BEGIN_KV_SERIALIZE_MAP()
+      KV_SERIALIZE(service_id)
+      KV_SERIALIZE(instruction)
+      KV_SERIALIZE_BLOB_AS_HEX_STRING(body)
+      KV_SERIALIZE_CONTAINER_POD_AS_BLOB(security)
+      KV_SERIALIZE(flags)
+    END_KV_SERIALIZE_MAP()
   };
 
 // applicable flags for tx_service_attachment::flags, can be combined using bitwise OR
-#define TX_SERVICE_ATTACHMENT_ENCRYPT_BODY  static_cast<uint8_t>(1 << 0)
-#define TX_SERVICE_ATTACHMENT_DEFLATE_BODY  static_cast<uint8_t>(1 << 1)
+#define TX_SERVICE_ATTACHMENT_ENCRYPT_BODY                    static_cast<uint8_t>(1 << 0)
+#define TX_SERVICE_ATTACHMENT_DEFLATE_BODY                    static_cast<uint8_t>(1 << 1)
+
+// with this flag enabled body encrypted/decrypted with the key created as a derivation from onetime key and "spend keys" of receiver
+#define TX_SERVICE_ATTACHMENT_ENCRYPT_BODY_ISOLATE_AUDITABLE  static_cast<uint8_t>(1 << 2)  
+// add proof of content, without revealing secrete
+#define TX_SERVICE_ATTACHMENT_ENCRYPT_ADD_PROOF               static_cast<uint8_t>(1 << 3)  
+
   //,
 
   
@@ -297,31 +415,81 @@ namespace currency
   };
 
 
-  struct extra_alias_entry_base
+  struct extra_alias_entry_base_old
   {
-    account_public_address m_address;
+    account_public_address_old m_address;
     std::string m_text_comment;
     std::vector<crypto::secret_key> m_view_key; // only one or zero elments expected (std::vector is using as memory efficient container for such a case)
     std::vector<crypto::signature> m_sign;      // only one or zero elments expected (std::vector is using as memory efficient container for such a case)
-    //uint8_t flags;
 
     BEGIN_SERIALIZE()
       FIELD(m_address)
       FIELD(m_text_comment)
       FIELD(m_view_key)
       FIELD(m_sign)
-      //FIELD(flags)
     END_SERIALIZE()
   };
 
-  struct extra_alias_entry: public extra_alias_entry_base
+  struct extra_alias_entry_old : public extra_alias_entry_base_old
   {
     std::string m_alias;
 
     BEGIN_SERIALIZE()
       FIELD(m_alias)
-      FIELDS(*static_cast<extra_alias_entry_base *>(this))
+      FIELDS(*static_cast<extra_alias_entry_base_old*>(this))
    END_SERIALIZE()
+  };
+
+  struct extra_alias_entry_base
+  {
+    extra_alias_entry_base() = default;
+    extra_alias_entry_base(const extra_alias_entry_base_old& old)
+      : m_address(account_public_address::from_old(old.m_address))
+      , m_text_comment(old.m_text_comment)
+      , m_view_key(old.m_view_key)
+      , m_sign(old.m_sign)
+    {
+    }
+
+    account_public_address m_address;
+    std::string m_text_comment;
+    std::vector<crypto::secret_key> m_view_key; // only one or zero elments expected (std::vector is using as memory efficient container for such a case)
+    std::vector<crypto::signature> m_sign;      // only one or zero elments expected (std::vector is using as memory efficient container for such a case)
+
+    BEGIN_SERIALIZE()
+      FIELD(m_address)
+      FIELD(m_text_comment)
+      FIELD(m_view_key)
+      FIELD(m_sign)
+    END_SERIALIZE()
+  };
+
+  struct extra_alias_entry : public extra_alias_entry_base
+  {
+    extra_alias_entry() = default;
+    extra_alias_entry(const extra_alias_entry_old& old)
+      : extra_alias_entry_base(old)
+      , m_alias(old.m_alias)
+    {
+    }
+    
+    std::string m_alias;
+
+    BEGIN_SERIALIZE()
+      FIELD(m_alias)
+      FIELDS(*static_cast<extra_alias_entry_base*>(this))
+    END_SERIALIZE()
+
+    extra_alias_entry_old to_old() const
+    {
+      extra_alias_entry_old result = AUTO_VAL_INIT(result);
+      result.m_address = m_address.to_old();
+      result.m_text_comment = m_text_comment;
+      result.m_view_key = m_view_key;
+      result.m_sign = m_sign;
+      result.m_alias = m_alias;
+      return result;
+    }
   };
 
 
@@ -336,12 +504,22 @@ namespace currency
   };
 
 
-  //number of block (or time), used as a limitation: spend this tx not early then block/time
+  //number of block (or timestamp if v bigger then CURRENCY_MAX_BLOCK_NUMBER), used as a limitation: spend this tx not early then block/time
   struct etc_tx_details_unlock_time
   {
     uint64_t v;
     BEGIN_SERIALIZE()
       VARINT_FIELD(v)
+    END_SERIALIZE()
+  };
+
+  //number of block (or timestamp if unlock_time_array[i] bigger then CURRENCY_MAX_BLOCK_NUMBER), used as a limitation: spend this tx not early then block/time
+  //unlock_time_array[i], i - index of output, unlock_time_array.size() == vout.size()
+  struct etc_tx_details_unlock_time2
+  {
+    std::vector<uint64_t> unlock_time_array;
+    BEGIN_SERIALIZE()
+      FIELD(unlock_time_array)
     END_SERIALIZE()
   };
 
@@ -361,7 +539,7 @@ namespace currency
     uint64_t v;
     BEGIN_SERIALIZE()
       VARINT_FIELD(v)
-      END_SERIALIZE()
+    END_SERIALIZE()
   };
 
   struct etc_tx_details_flags
@@ -372,7 +550,7 @@ namespace currency
     END_SERIALIZE()
   };
 
-  struct etc_tx_derivation_hint 
+  struct etc_tx_flags16_t 
   {
     uint16_t v;
     BEGIN_SERIALIZE()
@@ -380,16 +558,22 @@ namespace currency
     END_SERIALIZE()
   };
 
-  typedef boost::mpl::vector<tx_service_attachment, tx_comment, tx_payer, tx_receiver, tx_message, std::string, tx_crypto_checksum, etc_tx_time, etc_tx_details_unlock_time, etc_tx_details_expiration_time, etc_tx_details_flags, crypto::public_key, extra_attachment_info, extra_alias_entry, extra_user_data, extra_padding, etc_tx_derivation_hint> all_payload_types;
-  typedef boost::make_variant_over<all_payload_types>::type attachment_v;
-  typedef boost::make_variant_over<all_payload_types>::type extra_v;
+  typedef boost::mpl::vector21<
+    tx_service_attachment, tx_comment, tx_payer_old, tx_receiver_old, tx_derivation_hint, std::string, tx_crypto_checksum, etc_tx_time, etc_tx_details_unlock_time, etc_tx_details_expiration_time,
+    etc_tx_details_flags, crypto::public_key, extra_attachment_info, extra_alias_entry_old, extra_user_data, extra_padding, etc_tx_flags16_t, etc_tx_details_unlock_time2,
+    tx_payer, tx_receiver, extra_alias_entry
+  > all_payload_types;
+  
   typedef boost::make_variant_over<all_payload_types>::type payload_items_v;
+  typedef payload_items_v extra_v;
+  typedef payload_items_v attachment_v;
+
 
   class transaction_prefix
   {
   public:
     // tx version information
-    size_t   version;
+    uint64_t   version{};
     //extra
     std::vector<extra_v> extra;  
     std::vector<txin_v> vin;
@@ -520,6 +704,7 @@ namespace currency
       return k;
     }
   };
+  const static keypair null_keypair = AUTO_VAL_INIT(null_keypair);
   //---------------------------------------------------------------
   //PoS
   //based from ppcoin/novacoin approach
@@ -553,19 +738,23 @@ namespace currency
     uint64_t index;
     crypto::key_image keyimage;
     uint64_t block_timestamp;
+    uint64_t stake_unlock_time;
     //not for serialization
     uint64_t wallet_index;
 
     BEGIN_KV_SERIALIZE_MAP()
       KV_SERIALIZE(amount)
       KV_SERIALIZE(index)
+      KV_SERIALIZE(stake_unlock_time)
       KV_SERIALIZE(block_timestamp)
       KV_SERIALIZE_VAL_POD_AS_BLOB_FORCE(keyimage)
     END_KV_SERIALIZE_MAP()
   };
-}
+
+} // namespace currency
 
 POD_MAKE_HASHABLE(currency, account_public_address);
+POD_MAKE_HASHABLE(currency, account_public_address_old);
 
 BLOB_SERIALIZER(currency::txout_to_key);
 
@@ -586,10 +775,10 @@ SET_VARIANT_TAGS(currency::transaction, 5, "tx");
 SET_VARIANT_TAGS(currency::block, 6, "block");
 //attachment_v definitions 
 SET_VARIANT_TAGS(currency::tx_comment, 7, "comment");
-SET_VARIANT_TAGS(currency::tx_payer, 8, "payer");
+SET_VARIANT_TAGS(currency::tx_payer_old, 8, "payer");
 SET_VARIANT_TAGS(std::string, 9, "string");
 SET_VARIANT_TAGS(currency::tx_crypto_checksum, 10, "checksum");
-SET_VARIANT_TAGS(currency::tx_message, 11, "message");
+SET_VARIANT_TAGS(currency::tx_derivation_hint, 11, "derivation_hint");
 SET_VARIANT_TAGS(currency::tx_service_attachment, 12, "attachment");
 //SET_VARIANT_TAGS(currency::tx_onetime_secret_key, 13, "sec_key");
 SET_VARIANT_TAGS(currency::etc_tx_details_unlock_time, 14, "unlock_time");
@@ -600,10 +789,10 @@ SET_VARIANT_TAGS(currency::signed_parts, 17, "signed_outs");
 //extra_v definitions
 SET_VARIANT_TAGS(currency::extra_attachment_info, 18, "extra_attach_info");
 SET_VARIANT_TAGS(currency::extra_user_data, 19, "user_data");
-SET_VARIANT_TAGS(currency::extra_alias_entry, 20, "alias_entry");
+SET_VARIANT_TAGS(currency::extra_alias_entry_old, 20, "alias_entry");
 SET_VARIANT_TAGS(currency::extra_padding, 21, "extra_padding");
 SET_VARIANT_TAGS(crypto::public_key, 22, "pub_key");
-SET_VARIANT_TAGS(currency::etc_tx_derivation_hint, 23, "derive_hint");
+SET_VARIANT_TAGS(currency::etc_tx_flags16_t, 23, "etc_tx_flags16");
 SET_VARIANT_TAGS(uint16_t, 24, "derive_xor");
 //txout_v 
 SET_VARIANT_TAGS(currency::ref_by_id, 25, "ref_by_id");
@@ -611,6 +800,20 @@ SET_VARIANT_TAGS(uint64_t, 26, "uint64_t");
 //etc
 SET_VARIANT_TAGS(currency::etc_tx_time, 27, "etc_tx_time");
 SET_VARIANT_TAGS(uint32_t, 28, "uint32_t");
-SET_VARIANT_TAGS(currency::tx_receiver, 29, "payer");
+SET_VARIANT_TAGS(currency::tx_receiver_old, 29, "payer"); // -- original
+//SET_VARIANT_TAGS(currency::tx_receiver_old, 29, "receiver");
+SET_VARIANT_TAGS(currency::etc_tx_details_unlock_time2, 30, "unlock_time2");
+
+SET_VARIANT_TAGS(currency::tx_payer, 31, "payer2");
+SET_VARIANT_TAGS(currency::tx_receiver, 32, "receiver2");
+
+// @#@ TODO @#@
+SET_VARIANT_TAGS(currency::extra_alias_entry, 33, "alias_entry2");
+
+//htlc
+SET_VARIANT_TAGS(currency::txin_htlc, 34, "txin_htlc");
+SET_VARIANT_TAGS(currency::txout_htlc, 35, "txout_htlc");
+
+
 
 #undef SET_VARIANT_TAGS

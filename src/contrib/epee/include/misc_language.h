@@ -1,3 +1,4 @@
+// Copyright (c) 2019, anonimal, <anonimal@zano.org>
 // Copyright (c) 2006-2013, Andrey N. Sabelnikov, www.sabelnikov.net
 // All rights reserved.
 // 
@@ -64,6 +65,8 @@ namespace epee
 	}
 
 
+#define STD_TRY_CATCH_LOCATION(return_val) STD_TRY_CATCH(LOCATION_SS, return_val)
+
   /* helper class, to make able get namespace via decltype()::*/
   template<class base_class>
   class namespace_accessor: public base_class{};
@@ -76,6 +79,32 @@ namespace epee
 
 namespace misc_utils
 {
+  template<class _Ty1,
+    class _Ty2,
+    class _Ty3>
+    struct triple
+  {	// store a pair of values
+    typedef _Ty1 first_type;
+    typedef _Ty2 second_type;
+    typedef _Ty3 third_type;
+
+    triple()
+      : first(), second(), third()
+    {	// default construct
+    }
+
+    triple(const _Ty1& _Val1, const _Ty2& _Val2, const _Ty3& _Val3)
+      : first(_Val1), second(_Val2), third(_Val3)
+    {	// construct from specified values
+    }
+  
+    _Ty1 first;		// the first stored value
+    _Ty2 second;	// the second stored value
+    _Ty3 third;	// the second stored value
+  };
+
+
+
 	template<typename t_type>
 		t_type get_max_t_val(t_type t)
 		{
@@ -313,7 +342,11 @@ namespace misc_utils
     {}
     ~call_befor_die()
     {
+      NESTED_TRY_ENTRY();
+
       m_func();
+
+      NESTED_CATCH_ENTRY(__func__);
     }
   };
 
@@ -388,23 +421,42 @@ namespace misc_utils
     
     auto res = container.insert(typename t_container_type::value_type(key, AUTO_VAL_INIT(typename t_container_type::mapped_type())));
     return res.first->second;
-  } 
-}
-}
+  }
+
+  template<class t_container_type>
+  typename t_container_type::iterator it_get_or_insert_value_initialized(t_container_type& container, const typename t_container_type::key_type& key)
+  {
+    auto it = container.find(key);
+    if (it != container.end())
+    {
+      return it;
+    }
+
+    auto res = container.insert(typename t_container_type::value_type(key, AUTO_VAL_INIT(typename t_container_type::mapped_type())));
+    return res.first;
+  }
+
+} // namespace misc_utils
+} // namespace epee
 
 template<typename T>
 std::ostream& print_container_content(std::ostream& out, const T& v);
 
-template<typename T>
-std::ostream& operator<< (std::ostream& out, const std::vector<T>& v)
+namespace std
 {
-  return print_container_content(out, v);
-}
-template<typename T>
-std::ostream& operator<< (std::ostream& out, const std::list<T>& v)
-{
-  return print_container_content(out, v);
-}
+  template<typename T>
+  std::ostream& operator<< (std::ostream& out, const std::vector<T>& v)
+  {
+    return print_container_content(out, v);
+  }
+
+  template<typename T>
+  std::ostream& operator<< (std::ostream& out, const std::list<T>& v)
+  {
+    return print_container_content(out, v);
+  }
+
+} // namespace std
 
 template<typename T>
 std::ostream& print_container_content(std::ostream& out, const T& v)

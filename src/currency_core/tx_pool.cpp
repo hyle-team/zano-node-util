@@ -9,7 +9,7 @@
 #include <unordered_set>
 #include <vector>
 
-#include "common/db_backend_lmdb.h"
+#include "common/db_backend_selector.h"
 #include "tx_pool.h"
 #include "currency_boost_serialization.h"
 #include "currency_core/currency_config.h"
@@ -19,19 +19,22 @@
 #include "misc_language.h"
 #include "warnings.h"
 #include "crypto/hash.h"
-#include "offers_service_basics.h"
 #include "profile_tools.h"
+#include "common/db_backend_selector.h"
 
 DISABLE_VS_WARNINGS(4244 4345 4503) //'boost::foreach_detail_::or_' : decorated name length exceeded, name was truncated
 
 #define TRANSACTION_POOL_CONTAINER_TRANSACTIONS           "transactions"
-#define TRANSACTION_POOL_CONTAINER_CANCEL_OFFER_HASH      "cancel_offer_hash"
 #define TRANSACTION_POOL_CONTAINER_BLACK_TX_LIST          "black_tx_list"
 #define TRANSACTION_POOL_CONTAINER_ALIAS_NAMES            "alias_names"
 #define TRANSACTION_POOL_CONTAINER_ALIAS_ADDRESSES        "alias_addresses"
 #define TRANSACTION_POOL_CONTAINER_KEY_IMAGES             "key_images"
 #define TRANSACTION_POOL_CONTAINER_SOLO_OPTIONS           "solo"
+#define TRANSACTION_POOL_OPTIONS_ID_STORAGE_MAJOR_COMPATIBILITY_VERSION 92 // DON'T CHANGE THIS, if you need to resync db! Change TRANSACTION_POOL_MAJOR_COMPATIBILITY_VERSION instead!
 #define TRANSACTION_POOL_MAJOR_COMPATIBILITY_VERSION      BLOCKCHAIN_STORAGE_MAJOR_COMPATIBILITY_VERSION + 1
+
+
+#define CONFLICT_KEY_IMAGE_SPENT_DEPTH_TO_REMOVE_TX_FROM_POOL 50 // if there's a conflict in key images between tx in the pool and in the blockchain this much depth in required to remove correspongin tx from pool
 
 #undef LOG_DEFAULT_CHANNEL 
 #define LOG_DEFAULT_CHANNEL "tx_pool"
@@ -43,15 +46,14 @@ namespace currency
   tx_memory_pool::tx_memory_pool(blockchain_storage& bchs, i_currency_protocol* pprotocol) :
     m_blockchain(bchs),
     m_pprotocol(pprotocol),
-    m_db(std::shared_ptr<tools::db::i_db_backend>(new tools::db::lmdb_db_backend), m_dummy_rw_lock),
+    m_db(nullptr, m_dummy_rw_lock),
     m_db_transactions(m_db),
-    m_db_cancel_offer_hash(m_db),
     m_db_black_tx_list(m_db),
     m_db_solo_options(m_db), 
-    m_db_key_images_set(m_db),
+//    m_db_key_images_set(m_db),
     m_db_alias_names(m_db),
     m_db_alias_addresses(m_db),
-    m_db_storage_major_compatibility_version(TRANSACTION_POOL_MAJOR_COMPATIBILITY_VERSION, m_db_solo_options)
+    m_db_storage_major_compatibility_version(TRANSACTION_POOL_OPTIONS_ID_STORAGE_MAJOR_COMPATIBILITY_VERSION, m_db_solo_options)
   {
 
   }
@@ -90,6 +92,24 @@ namespace currency
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::add_tx(const transaction &tx, const crypto::hash &id, uint64_t blob_size, tx_verification_context& tvc, bool kept_by_block, bool from_core)
   {    
+    if (!kept_by_block && !from_core && m_blockchain.is_in_checkpoint_zone())
+    {
+      // BCS is in CP zone, tx verification is impossible until it gets synchronized
+      tvc.m_added_to_pool = false;
+      tvc.m_should_be_relayed = false;
+      tvc.m_verification_failed = false;
+      tvc.m_verification_impossible = true;
+      return false;
+    }
+
+    if (!m_blockchain.validate_tx_for_hardfork_specific_terms(tx, id))
+    {
+      //
+      LOG_ERROR("Transaction " << id <<" doesn't fit current hardfork");
+      tvc.m_verification_failed = true;
+      return false;
+    }
+
     TIME_MEASURE_START_PD(tx_processing_time);
     TIME_MEASURE_START_PD(check_inputs_types_supported_time);
     if(!check_inputs_types_supported(tx))
@@ -157,19 +177,7 @@ namespace currency
       uint64_t tx_fee = inputs_amount - outputs_amount;
       if (tx_fee < m_blockchain.get_core_runtime_config().tx_pool_min_fee)
       {
-        //exception for cancel offer transactions
-        if (process_cancel_offer_rules(tx))
-        {
-          // this tx has valid offer cansellation instructions and thus can go for free
-          // check soft size constrain
-          if (blob_size > CURRENCY_FREE_TX_MAX_BLOB_SIZE)
-          {
-            LOG_ERROR("Blob size (" << blob_size << ") << exceeds limit for transaction " << id << " that contains offer cancellation and has smaller fee (" << tx_fee << ") than expected");
-            tvc.m_verification_failed = true;
-            return false;
-          }
-        }
-        else if (is_valid_contract_finalization_tx(tx))
+        if (is_valid_contract_finalization_tx(tx))
         {
           // that means tx has less fee then allowed by current tx pull rules, but this transaction is actually 
           // a finalization of contract, and template of this contract finalization tx was prepared actually before 
@@ -177,8 +185,8 @@ namespace currency
         }
         else
         {
-          // this tx has no fee OR invalid offer cancellations instructions -- so the exceptions of zero fee is not applicable
-          LOG_ERROR("Transaction with id= " << id << " has too small fee: " << tx_fee << ", expected fee: " << m_blockchain.get_core_runtime_config().tx_pool_min_fee);
+          // this tx has no fee 
+          LOG_PRINT_RED_L0("Transaction with id= " << id << " has too small fee: " << tx_fee << ", expected fee: " << m_blockchain.get_core_runtime_config().tx_pool_min_fee);
           tvc.m_verification_failed = false;
           tvc.m_should_be_relayed = false;
           tvc.m_added_to_pool = false;
@@ -265,7 +273,7 @@ namespace currency
     td.receive_time = get_core_time();
 
     m_db_transactions.set(id, td);
-    on_tx_add(tx, kept_by_block);
+    on_tx_add(id, tx, kept_by_block);
 
     TIME_MEASURE_FINISH_PD(update_db_time);
     return true;
@@ -288,80 +296,7 @@ namespace currency
     CRITICAL_REGION_LOCAL(m_taken_txs_lock);
     m_taken_txs.clear();
   }
-  //---------------------------------------------------------------------------------
-  bool tx_memory_pool::process_cancel_offer_rules(const transaction& tx)
-  {
-    //TODO: this code doesn't take into account offer id in source tx
-    //TODO: add scan on tx size for free transaction here
-    m_db_transactions.begin_transaction();
-    misc_utils::auto_scope_leave_caller seh = misc_utils::create_scope_leave_handler([&](){m_db_transactions.commit_transaction(); });
-
-
-    size_t serv_att_count = 0;
-    std::list<bc_services::cancel_offer> co_list;
-    for (const auto& a: tx.attachment)
-    {
-      if (a.type() == typeid(tx_service_attachment))
-      {
-        const tx_service_attachment& srv_at = boost::get<tx_service_attachment>(a);
-        if (srv_at.service_id == BC_OFFERS_SERVICE_ID && srv_at.instruction == BC_OFFERS_SERVICE_INSTRUCTION_DEL)
-        {
-          if (!m_blockchain.validate_tx_service_attachmens_in_services(srv_at, serv_att_count, tx))
-          {
-            LOG_ERROR("validate_tx_service_attachmens_in_services failed for an offer cancellation transaction");
-            return false;
-          }
-          bc_services::extract_type_and_add<bc_services::cancel_offer>(srv_at.body, co_list);
-          if (m_db_cancel_offer_hash.get(co_list.back().tx_id))
-          {
-            LOG_ERROR("cancellation of offer " << co_list.back().tx_id << " has already been processed earlier; zero fee is disallowed");
-            return false;
-          }
-        }
-        serv_att_count++;
-      }
-    }
-    if (!co_list.size())
-    {
-      LOG_PRINT_L1("No cancel offers found");
-      return false;
-    }
-
-    for (auto co : co_list)
-    {
-      m_db_cancel_offer_hash.set(co.tx_id, true);
-    }
-
-    return true;
-  }
-  //---------------------------------------------------------------------------------
-  bool tx_memory_pool::unprocess_cancel_offer_rules(const transaction& tx)
-  {
-    m_db_transactions.begin_transaction();
-    misc_utils::auto_scope_leave_caller seh = misc_utils::create_scope_leave_handler([&](){m_db_transactions.commit_transaction(); });
-
-    std::list<bc_services::cancel_offer> co_list;
-    for (const auto& a : tx.attachment)
-    {
-      if (a.type() == typeid(tx_service_attachment))
-      {
-        const tx_service_attachment& srv_at = boost::get<tx_service_attachment>(a);
-        if (srv_at.service_id == BC_OFFERS_SERVICE_ID && srv_at.instruction == BC_OFFERS_SERVICE_INSTRUCTION_DEL)
-        {
-          co_list.clear();
-          bc_services::extract_type_and_add<bc_services::cancel_offer>(srv_at.body, co_list);
-          if (!co_list.size())
-            return false;
-          auto vptr = m_db_cancel_offer_hash.find(co_list.back().tx_id);
-          if (vptr == m_db_cancel_offer_hash.end())
-            return false;
-          m_db_cancel_offer_hash.erase(co_list.back().tx_id);
-        }
-      }
-    }
-    return true;
-  }
-//   //---------------------------------------------------------------------------------
+//---------------------------------------------------------------------------------
   bool tx_memory_pool::get_aliases_from_tx_pool(std::list<extra_alias_entry>& aliases)const
   {
 
@@ -397,8 +332,9 @@ namespace currency
   {
     LOCAL_READONLY_TRANSACTION();
     extra_alias_entry eai = AUTO_VAL_INIT(eai);
-    if (get_type_in_variant_container(tx.extra, eai))
-    {
+
+    bool r = false;
+    bool found = handle_2_alternative_types_in_variant_container<extra_alias_entry, extra_alias_entry_old>(tx.extra, [this, &r, &tx, is_in_block](const extra_alias_entry& eai) {
       //check in blockchain
       extra_alias_entry eai2 = AUTO_VAL_INIT(eai2);
       bool already_have_alias_registered = m_blockchain.get_alias_info(eai.m_alias, eai2);
@@ -407,7 +343,8 @@ namespace currency
       if (!is_in_block  && !eai.m_sign.size() && already_have_alias_registered)
       {
         LOG_PRINT_L0("Alias \"" << eai.m_alias  << "\" already registered in blockchain, transaction rejected");
-        return false;
+        r = false;
+        return false; // stop handling
       }
 
       std::string prev_alias = m_blockchain.get_alias_by_address(eai.m_address);
@@ -416,8 +353,9 @@ namespace currency
       {
         LOG_PRINT_L0("Address \"" << get_account_address_as_str(eai.m_address)  
           << "\" already registered with \""<< prev_alias 
-          << "\" aliass in blockchain (new alias: \"" << eai.m_alias  << "\"), transaction rejected");
-        return false;
+          << "\" alias in blockchain (new alias: \"" << eai.m_alias  << "\"), transaction rejected");
+        r = false;
+        return false; // stop handling
       }
 
       if (!is_in_block)
@@ -425,24 +363,29 @@ namespace currency
         if (m_db_alias_names.get(eai.m_alias))
         {
           LOG_PRINT_L0("Alias \"" << eai.m_alias << "\" already in transaction pool, transaction rejected");
-          return false;
+          r = false;
+          return false; // stop handling
         }
         if (m_db_alias_addresses.get(eai.m_address))
         {
           LOG_PRINT_L0("Alias \"" << eai.m_alias << "\" already in transaction pool by it's address(" << get_account_address_as_str(eai.m_address) << ") , transaction rejected");
-          return false;
+          r = false;
+          return false; // stop handling
         }
         //validate alias reward
         if (!m_blockchain.prevalidate_alias_info(tx, eai))
         {
           LOG_PRINT_L0("Alias \"" << eai.m_alias << "\" reward validation failed, transaction rejected");
-          return false;
+          r = false;
+          return false; // stop handling
         }
       }
 
+      r = true;
+      return true; // continue handling
+    });
 
-    }
-    return true;
+    return !found || r; // if found, r must be true for success
   }
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::add_tx(const transaction &tx, tx_verification_context& tvc, bool kept_by_block, bool from_core)
@@ -467,9 +410,8 @@ namespace currency
     tx = txe_tr->tx;
     blob_size = txe_tr->blob_size;
     fee = txe_tr->fee;
-    unprocess_cancel_offer_rules(txe_tr->tx);
     m_db_transactions.erase(id);
-    on_tx_remove(tx, txe_tr->kept_by_block);
+    on_tx_remove(id, tx, txe_tr->kept_by_block);
     set_taken(id);
     return true;
   }
@@ -512,20 +454,43 @@ namespace currency
         return true;
 
       // maximum age check - remove too old
-      uint64_t tx_age = get_core_time() - tx_entry.receive_time;
+      int64_t tx_age = get_core_time() - tx_entry.receive_time;
       if ((tx_age > CURRENCY_MEMPOOL_TX_LIVETIME ))
       {
-
-        LOG_PRINT_L0("Tx " << h << " removed from tx pool, reason: outdated, age: " << tx_age);
+        LOG_PRINT_L0("tx " << h << " is about to be removed from tx pool, reason: outdated, age: " << tx_age << " = " << misc_utils::get_time_interval_string(tx_age));
         to_delete.push_back(tx_to_delete_entry(h, tx_entry.tx, tx_entry.kept_by_block));
       }
 
       // expiration time check - remove expired
       if (is_tx_expired(tx_entry.tx, tx_expiration_ts_median) )
       {
-        LOG_PRINT_L0("Tx " << h << " removed from tx pool, reason: expired, expiration time: " << get_tx_expiration_time(tx_entry.tx) << ", blockchain median: " << tx_expiration_ts_median);
+        LOG_PRINT_L0("tx " << h << " is about to be removed from tx pool, reason: expired, expiration time: " << get_tx_expiration_time(tx_entry.tx) << ", blockchain median: " << tx_expiration_ts_median);
         to_delete.push_back(tx_to_delete_entry(h, tx_entry.tx, tx_entry.kept_by_block));
       }
+
+      // if a tx has at least one key image already used in blockchain (deep enough) -- remove such tx, as it cannot be added to any block
+      // although it will be removed by the age check above, we consider desireable
+      // to remove it from the pool faster in order to unblock related key images used in the same tx
+      uint64_t should_be_spent_before_height = m_blockchain.get_current_blockchain_size() - 1;
+      if (should_be_spent_before_height > CONFLICT_KEY_IMAGE_SPENT_DEPTH_TO_REMOVE_TX_FROM_POOL)
+      {
+        should_be_spent_before_height -= CONFLICT_KEY_IMAGE_SPENT_DEPTH_TO_REMOVE_TX_FROM_POOL;
+        for (auto& in : tx_entry.tx.vin)
+        {
+          if (in.type() == typeid(txin_to_key))
+          {
+            // if at least one key image is spent deep enought -- remove such tx
+            const crypto::key_image& ki = boost::get<txin_to_key>(in).k_image;
+            if (m_blockchain.have_tx_keyimg_as_spent(ki, should_be_spent_before_height))
+            {
+              LOG_PRINT_L0("tx " << h << " is about to be removed from tx pool, reason: ki was spent in the blockchain before height " << should_be_spent_before_height << ", tx age: " << misc_utils::get_time_interval_string(tx_age));
+              to_delete.push_back(tx_to_delete_entry(h, tx_entry.tx, tx_entry.kept_by_block));
+              return true;
+            }
+          }
+        }
+      }
+
 
       return true;
     });
@@ -533,7 +498,7 @@ namespace currency
     for (auto& e : to_delete)
     {
       m_db_transactions.erase(e.hash);
-      on_tx_remove(e.tx, e.kept_by_block);
+      on_tx_remove(e.hash, e.tx, e.kept_by_block);
     }
 
 
@@ -674,8 +639,10 @@ namespace currency
     return true;
   }
   //---------------------------------------------------------------------------------
-  bool tx_memory_pool::on_blockchain_inc(uint64_t new_block_height, const crypto::hash& top_block_id)
+  bool tx_memory_pool::on_blockchain_inc(uint64_t new_block_height, const crypto::hash& top_block_id, const std::list<crypto::key_image>& bsk)
   {
+
+
     return true;
   }
   //---------------------------------------------------------------------------------
@@ -755,38 +722,33 @@ namespace currency
     return false;
   }
   //---------------------------------------------------------------------------------
-  bool tx_memory_pool::insert_key_images(const transaction& tx, bool kept_by_block)
+  bool tx_memory_pool::insert_key_images(const crypto::hash &tx_id, const transaction& tx, bool kept_by_block)
   {
+    CRITICAL_REGION_LOCAL(m_key_images_lock);
     for(const auto& in : tx.vin)
     {
       if (in.type() == typeid(txin_to_key))
       {
-        CHECKED_GET_SPECIFIC_VARIANT(in, const txin_to_key, tokey_in, true);//should never fail
-        uint64_t count = 0;
-        auto ki_entry_ptr = m_db_key_images_set.get(tokey_in.k_image);
-        if (ki_entry_ptr.get())
-          count = *ki_entry_ptr;
-        uint64_t count_before = count;
-        ++count;
-        m_db_key_images_set.set(tokey_in.k_image, count);
-        LOG_PRINT_L2("tx pool: key image added: " << tokey_in.k_image << ", from tx " << get_transaction_hash(tx) << ", counter: " << count_before << " -> " << count);
+        const txin_to_key& tokey_in = boost::get<txin_to_key>(in);
+        auto& id_set = m_key_images[tokey_in.k_image];
+        size_t sz_before = id_set.size();
+        id_set.insert(tx_id);
+        LOG_PRINT_L2("tx pool: key image added: " << tokey_in.k_image << ", from tx " << tx_id << ", counter: " << sz_before << " -> " << id_set.size());
       }
     }
     return false;
   }
   //--------------------------------------------------------------------------------- 
-  bool tx_memory_pool::on_tx_add(const transaction& tx, bool kept_by_block)
+  bool tx_memory_pool::on_tx_add(crypto::hash tx_id, const transaction& tx, bool kept_by_block)
   {
-    if (!kept_by_block)
-      insert_key_images(tx, kept_by_block); // take into account only key images from txs that are not 'kept_by_block'
+    insert_key_images(tx_id, tx, kept_by_block);
     insert_alias_info(tx);
     return true;
   }
   //--------------------------------------------------------------------------------- 
-  bool tx_memory_pool::on_tx_remove(const transaction& tx, bool kept_by_block)
+  bool tx_memory_pool::on_tx_remove(const crypto::hash &id, const transaction& tx, bool kept_by_block)
   {
-    if (!kept_by_block)
-      remove_key_images(tx, kept_by_block); // take into account only key images from txs that are not 'kept_by_block'
+    remove_key_images(id, tx, kept_by_block);
     remove_alias_info(tx);
     return true;
   }
@@ -820,34 +782,33 @@ namespace currency
     return true;
   }
   //--------------------------------------------------------------------------------- 
-  bool tx_memory_pool::remove_key_images(const transaction& tx, bool kept_by_block)
+  bool tx_memory_pool::remove_key_images(const crypto::hash &tx_id, const transaction& tx, bool kept_by_block)
   {
+    CRITICAL_REGION_LOCAL(m_key_images_lock);
     for(const auto& in : tx.vin)
     {
       if (in.type() == typeid(txin_to_key))
-      {
-        CHECKED_GET_SPECIFIC_VARIANT(in, const txin_to_key, tokey_in, true);//should never fail
-        uint64_t count = 0;
-        auto ki_entry_ptr = m_db_key_images_set.get(tokey_in.k_image);
-        if (!ki_entry_ptr.get() || *ki_entry_ptr == 0)
-        {
-          LOG_ERROR("INTERNAL_ERROR: for tx " << get_transaction_hash(tx) << " key image " << tokey_in.k_image << " not found");
-          continue;
-        }
-        count = *ki_entry_ptr;
-        uint64_t count_before = count;
-        --count;
-        if (count)
-          m_db_key_images_set.set(tokey_in.k_image, count);
-        else
-          m_db_key_images_set.erase(tokey_in.k_image);
-        LOG_PRINT_L2("tx pool: key image removed: " << tokey_in.k_image << ", from tx " << get_transaction_hash(tx) << ", counter: " << count_before << " -> " << count);
+      {        
+        const txin_to_key& tokey_in = boost::get<txin_to_key>(in);
+
+        auto it_map = epee::misc_utils::it_get_or_insert_value_initialized(m_key_images, tokey_in.k_image);
+        auto& id_set = it_map->second;
+        size_t count_before = id_set.size();
+        auto it_set =  id_set.find(tx_id);
+        if(it_set != id_set.end())
+          id_set.erase(it_set);
+
+        size_t count_after = id_set.size();
+        if (id_set.size() == 0)
+          m_key_images.erase(it_map);
+
+        LOG_PRINT_L2("tx pool: key image removed: " << tokey_in.k_image << ", from tx " << tx_id << ", counter: " << count_before << " -> " << count_after);
       }
     }
     return false;
   }
   //---------------------------------------------------------------------------------
-  bool tx_memory_pool::get_key_images_from_tx_pool(std::unordered_set<crypto::key_image>& key_images) const
+  bool tx_memory_pool::get_key_images_from_tx_pool(key_image_cache& key_images) const
   {
     
     m_db_transactions.enumerate_items([&](uint64_t i, const crypto::hash& h, const tx_details &tx_entry)
@@ -856,7 +817,7 @@ namespace currency
       {
         if (in.type() == typeid(txin_to_key))
         {
-          key_images.insert(boost::get<txin_to_key>(in).k_image);
+          key_images[boost::get<txin_to_key>(in).k_image].insert(h);
         }
       }
       return true;
@@ -867,9 +828,9 @@ namespace currency
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::have_tx_keyimg_as_spent(const crypto::key_image& key_im)const
   {
-    
-    auto ptr = m_db_key_images_set.find(key_im);
-    if (ptr)
+    CRITICAL_REGION_LOCAL(m_key_images_lock);
+    auto it = m_key_images.find(key_im);
+    if (it != m_key_images.end())
       return true;
     return false;
   }
@@ -889,20 +850,18 @@ namespace currency
     
     m_db.begin_transaction();
     m_db_transactions.clear();
-    m_db_key_images_set.clear();
-    m_db_cancel_offer_hash.clear();
     m_db.commit_transaction();
     // should m_db_black_tx_list be cleared here?
+    CIRITCAL_OPERATION(m_key_images,clear());
   }
   //---------------------------------------------------------------------------------
   void tx_memory_pool::clear()
   {
     m_db.begin_transaction();
     m_db_transactions.clear();
-    m_db_cancel_offer_hash.clear();
     m_db_black_tx_list.clear();
-    m_db_key_images_set.clear();
     m_db.commit_transaction();
+    CIRITCAL_OPERATION(m_key_images,clear());
   }
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::is_transaction_ready_to_go(tx_details& txd, const crypto::hash& id)const 
@@ -944,8 +903,11 @@ namespace currency
       }
     }
     //if we here, transaction seems valid, but, anyway, check for key_images collisions with blockchain, just to be sure
-    if(m_blockchain.have_tx_keyimges_as_spent(txd.tx))
+    if (m_blockchain.have_tx_keyimges_as_spent(txd.tx))
+    {
       return false;
+    }
+      
 
     if (!check_tx_multisig_ins_and_outs(txd.tx, false))
       return false;
@@ -1049,7 +1011,9 @@ namespace currency
     const boost::multiprecision::uint128_t& already_generated_coins,
     size_t &total_size, 
     uint64_t &fee, 
-    uint64_t height)
+    uint64_t height, 
+    const std::list<transaction>& explicit_txs
+  )
   {
     LOCAL_READONLY_TRANSACTION();
     //typedef transactions_container::value_type txv;
@@ -1058,12 +1022,12 @@ namespace currency
 
     std::vector<txv> txs_v;
     txs_v.reserve(m_db_transactions.size());
-    std::vector<txv*> txs;
+    std::vector<size_t> txs; // selected transactions, vector of indices of txs_v
 
-    //std::transform(m_transactions.begin(), m_transactions.end(), txs.begin(), [](txv &a) -> txv * { return &a; });
-    //keep getting it as a values cz db items cache will keep it as unserialied object stored by shared ptrs 
+    
+    //keep getting it as a values cz db items cache will keep it as unserialised object stored by shared ptrs 
     m_db_transactions.enumerate_keys([&](uint64_t i, crypto::hash& k){txs_v.resize(i + 1); txs_v[i].first = k; return true;});
-    txs.resize(txs_v.size(), nullptr);
+    txs.resize(txs_v.size(), SIZE_MAX);
     
     for (uint64_t i = 0; i != txs_v.size(); i++)
     {      
@@ -1072,21 +1036,23 @@ namespace currency
       if (!txs_v[i].second)
       {
         LOG_ERROR("Internal tx pool db error: key " << k << " was enumerated as key but couldn't get value");
-        continue;
+        return false;
       }
-      txs[i] = &txs_v[i];
+      txs[i] = i;
     }
 
     
     
-    std::sort(txs.begin(), txs.end(), [](txv *a, txv *b) -> bool {
+    std::sort(txs.begin(), txs.end(), [&txs_v](size_t a, size_t b) -> bool {
       boost::multiprecision::uint128_t a_, b_;
-      a_ = boost::multiprecision::uint128_t(a->second->fee) * b->second->blob_size;
-      b_ = boost::multiprecision::uint128_t(b->second->fee) * a->second->blob_size;
+      a_ = boost::multiprecision::uint128_t(txs_v[a].second->fee) * txs_v[b].second->blob_size;
+      b_ = boost::multiprecision::uint128_t(txs_v[b].second->fee) * txs_v[a].second->blob_size;
       return a_ > b_;
     });
 
-    size_t current_size = 0;
+
+    size_t explicit_total_size = get_objects_blobsize(explicit_txs);
+    size_t current_size = explicit_total_size;
     uint64_t current_fee = 0;
     uint64_t best_money;
     if (!get_block_reward(pos, median_size, CURRENCY_COINBASE_BLOB_RESERVED_SIZE, already_generated_coins, best_money, height)) {
@@ -1100,10 +1066,10 @@ namespace currency
 
     // scan txs for alias reg requests - if there are such requests, don't process alias updates
     bool alias_regs_exist = false;
-    for (auto txp : txs) 
+    for (auto txi : txs) 
     {
       tx_extra_info ei = AUTO_VAL_INIT(ei);
-      bool r = parse_and_validate_tx_extra(txp->second->tx, ei);
+      bool r = parse_and_validate_tx_extra(txs_v[txi].second->tx, ei);
       CHECK_AND_ASSERT_MES(r, false, "parse_and_validate_tx_extra failed while looking up the tx pool");
       if (!ei.m_alias.m_alias.empty() && !ei.m_alias.m_sign.size()) {
         alias_regs_exist = true;
@@ -1117,12 +1083,12 @@ namespace currency
 
     for (size_t i = 0; i < txs.size(); i++)
     {
-      txv &tx(*txs[i]);
+      txv &tx(txs_v[txs[i]]);
 
       // expiration time check -- skip expired transactions
       if (is_tx_expired(tx.second->tx, tx_expiration_ts_median))
       {
-          txs[i] = nullptr;
+          txs[i] = SIZE_MAX;
           continue;
       } 
       
@@ -1136,7 +1102,7 @@ namespace currency
         if ((alias_count >= MAX_ALIAS_PER_BLOCK) ||                   // IF this tx registers/updates an alias AND alias per block threshold exceeded
           (update_an_alias && alias_regs_exist))                      // OR this tx updates an alias AND there are alias reg requests...
         {
-          txs[i] = NULL;                                              // ...skip this tx
+          txs[i] = SIZE_MAX;                                          // ...skip this tx
           continue;
         }
       }
@@ -1154,7 +1120,7 @@ namespace currency
       }
 
       if (!is_tx_ready_to_go_result || have_key_images(k_images, tx.second->tx)) {
-        txs[i] = NULL;
+        txs[i] = SIZE_MAX;
         continue;
       }
       append_key_images(k_images, tx.second->tx);
@@ -1181,80 +1147,150 @@ namespace currency
 
     for (size_t i = 0; i != txs.size(); i++)
     {
-      if (txs[i])
+      if (txs[i] != SIZE_MAX)
       {
+        txv &tx(txs_v[txs[i]]);
         if (i < best_position)
         {
-          bl.tx_hashes.push_back(txs[i]->first);
+          bl.tx_hashes.push_back(tx.first);
         }
-        else if (have_attachment_service_in_container(txs[i]->second->tx.attachment, BC_OFFERS_SERVICE_ID, BC_OFFERS_SERVICE_INSTRUCTION_DEL))
+        else if (have_attachment_service_in_container(tx.second->tx.attachment, BC_OFFERS_SERVICE_ID, BC_OFFERS_SERVICE_INSTRUCTION_DEL))
         {
           // BC_OFFERS_SERVICE_INSTRUCTION_DEL transactions has zero fee, so include them here regardless of reward effectiveness
-          bl.tx_hashes.push_back(txs[i]->first);
-          total_size += txs[i]->second->blob_size;
+          bl.tx_hashes.push_back(tx.first);
+          total_size += tx.second->blob_size;
         }
       }
+    }
+    // add explicit transactions 
+    for (const auto& tx : explicit_txs)
+    {
+      fee += get_tx_fee(tx);
+      bl.tx_hashes.push_back(get_transaction_hash(tx));
     }
     return true;
   }
   //---------------------------------------------------------------------------------
-  void tx_memory_pool::initialize_db_solo_options_values()
+  void tx_memory_pool::store_db_solo_options_values()
   {
     m_db.begin_transaction();
     m_db_storage_major_compatibility_version = TRANSACTION_POOL_MAJOR_COMPATIBILITY_VERSION;
     m_db.commit_transaction();
   }
   //---------------------------------------------------------------------------------
-  bool tx_memory_pool::init(const std::string& config_folder)
+  bool tx_memory_pool::init(const std::string& config_folder, const boost::program_options::variables_map& vm)
   {
+    tools::db::db_backend_selector dbbs;
+    dbbs.init(vm);
+    auto p_backend = dbbs.create_backend();
+    if (!p_backend)
+    {
+      LOG_PRINT_RED_L0("Failed to create db engine");
+      return false;
+    }
+    m_db.reset_backend(p_backend);
+    LOG_PRINT_L0("DB ENGINE USED BY POOL: " << m_db.get_backend()->name());
+
     m_config_folder = config_folder;
 
-    uint64_t cache_size = CACHE_SIZE;
-    LOG_PRINT_GREEN("Using pool db file cache size(L1): " << cache_size, LOG_LEVEL_0);
+    uint64_t cache_size_l1 = CACHE_SIZE;
+    LOG_PRINT_GREEN("Using pool db file cache size(L1): " << cache_size_l1, LOG_LEVEL_0);
 
-    LOG_PRINT_L0("Loading blockchain...");
-    const std::string folder_name = m_config_folder + "/" CURRENCY_POOLDATA_FOLDERNAME;
-    tools::create_directories_if_necessary(folder_name);
-    bool res = m_db.open(folder_name, cache_size);
-    CHECK_AND_ASSERT_MES(res, false, "Failed to initialize pool database in folder: " << folder_name);
-
-    res = m_db_transactions.init(TRANSACTION_POOL_CONTAINER_TRANSACTIONS);
-    CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
-    res = m_db_key_images_set.init(TRANSACTION_POOL_CONTAINER_KEY_IMAGES);
-    CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
-    res = m_db_cancel_offer_hash.init(TRANSACTION_POOL_CONTAINER_CANCEL_OFFER_HASH);
-    CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
-    res = m_db_black_tx_list.init(TRANSACTION_POOL_CONTAINER_BLACK_TX_LIST);
-    CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
-    res = m_db_alias_names.init(TRANSACTION_POOL_CONTAINER_ALIAS_NAMES);
-    CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
-    res = m_db_alias_addresses.init(TRANSACTION_POOL_CONTAINER_ALIAS_ADDRESSES);
-    CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
-    res = m_db_solo_options.init(TRANSACTION_POOL_CONTAINER_SOLO_OPTIONS);
-    CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
-
-
-    m_db_transactions.set_cache_size(1000);
-    m_db_alias_names.set_cache_size(10000);
-    m_db_alias_addresses.set_cache_size(10000);
-    m_db_cancel_offer_hash.set_cache_size(1000);
-    m_db_black_tx_list.set_cache_size(1000);
-
-    bool need_reinit = false;
-    if (m_db_storage_major_compatibility_version != TRANSACTION_POOL_MAJOR_COMPATIBILITY_VERSION)
-      need_reinit = true;
-
-    if (need_reinit)
+    // remove old incompatible DB
+    const std::string old_db_folder_path = m_config_folder + "/" CURRENCY_POOLDATA_FOLDERNAME_OLD;
+    if (boost::filesystem::exists(epee::string_encoding::utf8_to_wstring(old_db_folder_path)))
     {
-      clear();
-      LOG_PRINT_MAGENTA("Tx Pool reinitialized.", LOG_LEVEL_0);
+      LOG_PRINT_YELLOW("Removing old DB in " << old_db_folder_path << "...", LOG_LEVEL_0);
+      boost::filesystem::remove_all(epee::string_encoding::utf8_to_wstring(old_db_folder_path));
     }
-    initialize_db_solo_options_values();
 
-    LOG_PRINT_GREEN("TX_POOL Initialized ok. (" << m_db_transactions.size() << " transactions)", LOG_LEVEL_0);
+    const std::string db_folder_path = dbbs.get_pool_db_folder_path();
+    
+    LOG_PRINT_L0("Loading blockchain from " << db_folder_path << "...");
+
+    bool db_opened_okay = false;
+    for(size_t loading_attempt_no = 0; loading_attempt_no < 2; ++loading_attempt_no)
+    {
+      bool res = m_db.open(db_folder_path, cache_size_l1);
+      if (!res)
+      {
+        // if DB could not be opened -- try to remove the whole folder and re-open DB
+        LOG_PRINT_YELLOW("Failed to initialize database in folder: " << db_folder_path << ", first attempt", LOG_LEVEL_0);
+        boost::filesystem::remove_all(epee::string_encoding::utf8_to_wstring(db_folder_path));
+        res = m_db.open(db_folder_path, cache_size_l1);
+        CHECK_AND_ASSERT_MES(res, false, "Failed to initialize database in folder: " << db_folder_path << ", second attempt");
+      }
+
+      res = m_db_transactions.init(TRANSACTION_POOL_CONTAINER_TRANSACTIONS);
+      CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
+      res = m_db_black_tx_list.init(TRANSACTION_POOL_CONTAINER_BLACK_TX_LIST);
+      CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
+      res = m_db_alias_names.init(TRANSACTION_POOL_CONTAINER_ALIAS_NAMES);
+      CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
+      res = m_db_alias_addresses.init(TRANSACTION_POOL_CONTAINER_ALIAS_ADDRESSES);
+      CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
+      res = m_db_solo_options.init(TRANSACTION_POOL_CONTAINER_SOLO_OPTIONS);
+      CHECK_AND_ASSERT_MES(res, false, "Unable to init db container");
+
+      m_db_transactions.set_cache_size(1000);
+      m_db_alias_names.set_cache_size(10000);
+      m_db_alias_addresses.set_cache_size(10000);
+      m_db_black_tx_list.set_cache_size(1000);
+
+      bool need_reinit = false;
+      if (m_db_storage_major_compatibility_version > 0 && m_db_storage_major_compatibility_version != TRANSACTION_POOL_MAJOR_COMPATIBILITY_VERSION)
+      {
+        need_reinit = true;
+        LOG_PRINT_MAGENTA("Tx pool DB needs reinit because it has major compatibility ver is " << m_db_storage_major_compatibility_version << ", expected: " << TRANSACTION_POOL_MAJOR_COMPATIBILITY_VERSION, LOG_LEVEL_0); 
+      }
+
+      if (need_reinit)
+      {
+        LOG_PRINT_L1("DB at " << db_folder_path << " is about to be deleted and re-created...");
+        m_db_transactions.deinit();
+//        m_db_key_images_set.deinit();
+        m_db_black_tx_list.deinit();
+        m_db_alias_names.deinit();
+        m_db_alias_addresses.deinit();
+        m_db_solo_options.deinit();
+        m_db.close();
+        size_t files_removed = boost::filesystem::remove_all(epee::string_encoding::utf8_to_wstring(db_folder_path));
+        LOG_PRINT_L1(files_removed << " files at " << db_folder_path << " removed");
+
+        // try to re-create DB and re-init containers
+        continue;
+      }
+
+      db_opened_okay = true;
+      break;
+    }
+
+    CHECK_AND_ASSERT_MES(db_opened_okay, false, "All attempts to open DB at " << db_folder_path << " failed");
+
+    store_db_solo_options_values();
+
+    LOG_PRINT_GREEN("tx pool loaded ok from " << db_folder_path << ", loaded " << m_db_transactions.size() << " transactions", LOG_LEVEL_0);
+    if (epee::log_space::log_singletone::get_log_detalisation_level() >= LOG_LEVEL_2 && m_db_transactions.size() != 0)
+    {
+      std::stringstream ss;
+      m_db_transactions.enumerate_items([&](uint64_t i, const crypto::hash& h, const tx_details &tx_entry)
+      {
+        ss << h << " sz: " << std::setw(5) << tx_entry.blob_size << " rcv: " << misc_utils::get_time_interval_string(time(nullptr) - tx_entry.receive_time) << " ago"  << ENDL;
+        return true;
+      });
+      LOG_PRINT_L2(ss.str());
+    }
+
+    load_keyimages_cache();
+
     return true;
   }
-
+  //---------------------------------------------------------------------------------
+  bool tx_memory_pool::load_keyimages_cache()
+  {
+    CRITICAL_REGION_LOCAL(m_key_images_lock);
+    return get_key_images_from_tx_pool(m_key_images);    
+  }
   //---------------------------------------------------------------------------------
   bool tx_memory_pool::deinit()
   {

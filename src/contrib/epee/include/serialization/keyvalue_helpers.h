@@ -51,6 +51,7 @@ namespace epee
     }
   };
 
+
 	//basic helpers for pod-to-hex serialization 
 	template<class t_pod_type>
 	std::string transform_t_pod_to_str(const t_pod_type & a)
@@ -61,10 +62,34 @@ namespace epee
 	t_pod_type transform_str_to_t_pod(const std::string& a)
 	{
 		t_pod_type res = AUTO_VAL_INIT(res);
-		epee::string_tools::hex_to_pod(a, res);
+    if (!epee::string_tools::hex_to_pod(a, res))
+      throw std::runtime_error(std::string("Unable to transform \"") + a + "\" to pod type " + typeid(t_pod_type).name());
 		return res;
 	}
+
+  //basic helpers for blob-to-hex serialization 
+  
+  inline std::string transform_binbuf_to_hexstr(const std::string& a)
+  {
+    return epee::string_tools::buff_to_hex_nodelimer(a);
+  }
+
+  inline std::string transform_hexstr_to_binbuff(const std::string& a)
+  {
+    std::string res;
+    if (!epee::string_tools::parse_hexstr_to_binbuff(a, res))
+    {
+      CHECK_AND_ASSERT_THROW_MES(false, "Failed to parse hex string:" << a);
+    }
+    return res;
+  }
 	//-------------------------------------------------------------------------------------------------------------------
-
-
+#pragma pack(push, 1)
+  template<class first_t, class second_t>
+  struct pod_pair
+  {
+    first_t first;
+    second_t second;
+  };
+#pragma pack(pop)
 }

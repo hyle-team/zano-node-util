@@ -5,6 +5,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #pragma once
+#include "serialization/keyvalue_hexemizer.h"
 #include "currency_protocol/currency_protocol_defs.h"
 #include "currency_core/currency_basic.h"
 #include "currency_core/difficulty.h"
@@ -14,17 +15,10 @@
 #include "storages/portable_storage_base.h"
 #include "currency_core/offers_service_basics.h"
 #include "currency_core/basic_api_response_codes.h"
-
+#include "common/error_codes.h"
 namespace currency
 {
   //-----------------------------------------------
-#define CORE_RPC_STATUS_OK                 BASIC_RESPONSE_STATUS_OK
-#define CORE_RPC_STATUS_BUSY               BASIC_RESPONSE_STATUS_BUSY
-#define CORE_RPC_STATUS_NOT_FOUND          BASIC_RESPONSE_STATUS_NOT_FOUND
-#define CORE_RPC_STATUS_FAILED             BASIC_RESPONSE_STATUS_FAILED
-#define CORE_RPC_STATUS_GENESIS_MISMATCH   "GENESIS_MISMATCH"
-#define CORE_RPC_STATUS_DISCONNECTED       "DISCONNECTED"
-
 
   struct alias_rpc_details_base
   {
@@ -115,9 +109,13 @@ namespace currency
 
     struct request
     {
+      bool need_global_indexes;
+      uint64_t minimum_height;
       std::list<crypto::hash> block_ids; //*first 10 blocks id goes sequential, next goes in pow(2,n) offset, like 2, 4, 8, 16, 32, 64 and so on, and the last one is always genesis block */
 
       BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(need_global_indexes)
+        KV_SERIALIZE(minimum_height)
         KV_SERIALIZE_CONTAINER_POD_AS_BLOB(block_ids)
       END_KV_SERIALIZE_MAP()
     };
@@ -141,8 +139,6 @@ namespace currency
   typedef COMMAND_RPC_GET_BLOCKS_FAST_T<block_complete_entry> COMMAND_RPC_GET_BLOCKS_FAST;
   typedef COMMAND_RPC_GET_BLOCKS_FAST_T<block_direct_data_entry> COMMAND_RPC_GET_BLOCKS_DIRECT;
   
-
-
   //-----------------------------------------------
   struct COMMAND_RPC_GET_TRANSACTIONS
   {
@@ -169,6 +165,30 @@ namespace currency
       END_KV_SERIALIZE_MAP()
     };
   };
+
+  //-----------------------------------------------
+  struct COMMAND_RPC_GET_EST_HEIGHT_FROM_DATE
+  {
+    struct request
+    {
+      uint64_t timestamp;
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(timestamp)
+      END_KV_SERIALIZE_MAP()
+    };
+
+    struct response
+    {
+      uint64_t h;
+      std::string status;
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(h)
+        KV_SERIALIZE(status)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
   //-----------------------------------------------
   struct COMMAND_RPC_GET_TX_POOL
   {
@@ -181,10 +201,12 @@ namespace currency
     struct response
     {
       std::list<blobdata> txs;  //transactions blobs
+      uint64_t tx_expiration_ts_median;
       std::string status;
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(txs)
+        KV_SERIALIZE(tx_expiration_ts_median)
         KV_SERIALIZE(status)
       END_KV_SERIALIZE_MAP()
     };
@@ -216,19 +238,21 @@ namespace currency
   {
     struct request
     {
-      crypto::hash txid;
+      std::list<crypto::hash> txids;
+
       BEGIN_KV_SERIALIZE_MAP()
-        KV_SERIALIZE_VAL_POD_AS_BLOB(txid)
+        KV_SERIALIZE_CONTAINER_POD_AS_BLOB(txids)
       END_KV_SERIALIZE_MAP()
     };
 
 
     struct response
     {
-      std::vector<uint64_t> o_indexes;
+      std::vector<struct_with_one_t_type<std::vector<uint64_t> > > tx_global_outs;
+      //std::vector<uint64_t> o_indexes;
       std::string status;
       BEGIN_KV_SERIALIZE_MAP()
-        KV_SERIALIZE(o_indexes)
+        KV_SERIALIZE(tx_global_outs)
         KV_SERIALIZE(status)
       END_KV_SERIALIZE_MAP()
     };
@@ -459,6 +483,8 @@ namespace currency
     uint64_t etc_stuff_6;
     uint64_t insert_time_4;
     uint64_t raise_block_core_event;
+    uint64_t target_calculating_enum_blocks;
+    uint64_t target_calculating_calc;
 
     //tx processing zone
     uint64_t tx_check_inputs_time;
@@ -473,6 +499,8 @@ namespace currency
     uint64_t tx_append_is_expired;
     uint64_t tx_print_log;
     uint64_t tx_prapare_append;
+
+    uint64_t tx_mixin_count;
 
 
     uint64_t tx_store_db;
@@ -505,7 +533,8 @@ namespace currency
       KV_SERIALIZE(etc_stuff_6)
       KV_SERIALIZE(insert_time_4)
       KV_SERIALIZE(raise_block_core_event)
-
+      KV_SERIALIZE(target_calculating_enum_blocks)
+      KV_SERIALIZE(target_calculating_calc)
       //tx processing zone
       KV_SERIALIZE(tx_check_inputs_time)
       KV_SERIALIZE(tx_add_one_tx_time)
@@ -520,6 +549,7 @@ namespace currency
       KV_SERIALIZE(tx_store_db)
       KV_SERIALIZE(tx_print_log)
       KV_SERIALIZE(tx_prapare_append)
+      KV_SERIALIZE(tx_mixin_count)      
 
       KV_SERIALIZE(tx_check_inputs_prefix_hash)
       KV_SERIALIZE(tx_check_inputs_attachment_check)
@@ -611,7 +641,8 @@ namespace currency
       daemon_network_state_online = 2,
       daemon_network_state_loading_core = 3,
       daemon_network_state_internal_error = 4,
-      daemon_network_state_unloading_core = 5
+      daemon_network_state_unloading_core = 5,
+      daemon_network_state_downloading_database = 6
     };
 
     struct response
@@ -768,27 +799,30 @@ namespace currency
   {
     struct request
     {
-      //uint64_t reserve_size;       //max 255 bytes
+      blobdata explicit_transaction;
       std::string extra_text;
       std::string wallet_address;
       std::string stakeholder_address;
       bool pos_block;              //is pos block 
       uint64_t pos_amount;         //
       uint64_t pos_index;          //
+      uint64_t stake_unlock_time;
 
       BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_BLOB_AS_HEX_STRING(explicit_transaction)
         KV_SERIALIZE(extra_text)
         KV_SERIALIZE(wallet_address)   
         KV_SERIALIZE(stakeholder_address);
         KV_SERIALIZE(pos_block)
         KV_SERIALIZE(pos_amount)
         KV_SERIALIZE(pos_index)
+        KV_SERIALIZE(stake_unlock_time)
       END_KV_SERIALIZE_MAP()
     };
 
     struct response
     {
-      uint64_t difficulty;
+      std::string difficulty;
       uint64_t height;
       crypto::hash seed;
       blobdata blocktemplate_blob;
@@ -820,6 +854,29 @@ namespace currency
     };
   };
   
+  struct COMMAND_RPC_SUBMITBLOCK2
+  {
+    struct request
+    {
+      std::string b;                              //hex encoded block blob
+      std::list<epee::hexemizer> explicit_txs;    //hex encoded tx blobs
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE_BLOB_AS_HEX_STRING(b)
+        KV_SERIALIZE(explicit_txs)
+      END_KV_SERIALIZE_MAP()
+    };
+
+    struct response
+    {
+      std::string status;
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(status)
+      END_KV_SERIALIZE_MAP()
+    };
+  };
+
   struct block_header_response
   {
       uint8_t major_version;
@@ -831,7 +888,7 @@ namespace currency
       uint64_t height;
       uint64_t depth;
       std::string hash;
-      difficulty_type difficulty;
+      std::string difficulty;
       uint64_t reward;
       
       BEGIN_KV_SERIALIZE_MAP()
@@ -1081,6 +1138,7 @@ namespace currency
       uint64_t starter_timestamp;
       crypto::hash last_block_hash;
       bool     is_pos_allowed;
+      uint64_t iterations_processed;
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(status)
@@ -1088,6 +1146,7 @@ namespace currency
         KV_SERIALIZE(block_timestamp)
         KV_SERIALIZE(height)
         KV_SERIALIZE(is_pos_allowed)
+        KV_SERIALIZE(iterations_processed)
         KV_SERIALIZE(starter_timestamp)
         KV_SERIALIZE_VAL_POD_AS_BLOB(last_block_hash);
       END_KV_SERIALIZE_MAP()
@@ -1142,10 +1201,12 @@ namespace currency
   {
     uint64_t amount;
     uint64_t multisig_count;
+    std::string htlc_origin;
     std::string kimage_or_ms_id;
     std::vector<uint64_t> global_indexes;
     BEGIN_KV_SERIALIZE_MAP()
       KV_SERIALIZE(amount)
+      KV_SERIALIZE(htlc_origin)
       KV_SERIALIZE(kimage_or_ms_id)
       KV_SERIALIZE(global_indexes)
       KV_SERIALIZE(multisig_count)
@@ -1498,12 +1559,13 @@ namespace currency
   };
 
 
-  struct COMMAND_RPC_GET_ALL_OFFERS
+  struct COMMAND_RPC_GET_OFFERS_EX
   {
     struct request
     {
-
+      bc_services::core_offers_filter filter;
       BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(filter)
       END_KV_SERIALIZE_MAP()
     };
 

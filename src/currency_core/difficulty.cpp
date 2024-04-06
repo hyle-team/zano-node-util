@@ -24,9 +24,9 @@ namespace currency {
   using std::uint64_t;
   using std::vector;
 
-#if defined(_MSC_VER)
-#include <windows.h>
-#include <winnt.h>
+//#if defined(_MSC_VER)
+//#include <windows.h>
+//#include <winnt.h>
 
   static inline void mul(uint64_t a, uint64_t b, uint64_t &low, uint64_t &high) {
     boost::multiprecision::uint128_t res = boost::multiprecision::uint128_t(a) * b;
@@ -36,7 +36,7 @@ namespace currency {
     //low = UnsignedMultiply128(a, b, &high);
   }
 
-#else
+/* #else
 
   static inline void mul(uint64_t a, uint64_t b, uint64_t &low, uint64_t &high) {
     typedef unsigned __int128 uint128_t;
@@ -45,7 +45,7 @@ namespace currency {
     high = (uint64_t)(res >> 64);
   }
 
-#endif
+#endif */
 
   static inline bool cadd(uint64_t a, uint64_t b) {
     return a + b < a;
@@ -55,23 +55,7 @@ namespace currency {
     return a + b < a || (c && a + b == (uint64_t)-1);
   }
 
-  bool check_hash_old(const crypto::hash &hash, difficulty_type difficulty) {
-    uint64_t low, high, top, cur;
-    // First check the highest word, this will most likely fail for a random hash.
-    mul(swap64le(((const uint64_t *)&hash)[3]), difficulty, top, high);
-    if (high != 0) {
-      return false;
-    }
-    mul(swap64le(((const uint64_t *)&hash)[0]), difficulty, low, cur);
-    mul(swap64le(((const uint64_t *)&hash)[1]), difficulty, low, high);
-    bool carry = cadd(cur, low);
-    cur = high;
-    mul(swap64le(((const uint64_t *)&hash)[2]), difficulty, low, high);
-    carry = cadc(cur, low, carry);
-    carry = cadc(high, top, carry);
-    return !carry;
-  }
-
+ 
 #if defined(_MSC_VER)
 #ifdef max
 #undef max
@@ -143,48 +127,6 @@ namespace currency {
     }
   }
 
-  difficulty_type next_difficulty_old(vector<uint64_t> timestamps, vector<difficulty_type> cumulative_difficulties, size_t target_seconds) {
-    //cutoff DIFFICULTY_LAG
-    if (timestamps.size() > DIFFICULTY_WINDOW)
-    {
-      timestamps.resize(DIFFICULTY_WINDOW);
-      cumulative_difficulties.resize(DIFFICULTY_WINDOW);
-    }
-
-
-    size_t length = timestamps.size();
-    assert(length == cumulative_difficulties.size());
-    if (length <= 1) {
-      return DIFFICULTY_STARTER;
-    }
-    static_assert(DIFFICULTY_WINDOW >= 2, "Window is too small");
-    assert(length <= DIFFICULTY_WINDOW);
-    sort(timestamps.begin(), timestamps.end());
-    size_t cut_begin, cut_end;
-    static_assert(2 * DIFFICULTY_CUT <= DIFFICULTY_WINDOW - 2, "Cut length is too large");
-    if (length <= DIFFICULTY_WINDOW - 2 * DIFFICULTY_CUT) {
-      cut_begin = 0;
-      cut_end = length;
-    }
-    else {
-      cut_begin = (length - (DIFFICULTY_WINDOW - 2 * DIFFICULTY_CUT) + 1) / 2;
-      cut_end = cut_begin + (DIFFICULTY_WINDOW - 2 * DIFFICULTY_CUT);
-    }
-    assert(/*cut_begin >= 0 &&*/ cut_begin + 2 <= cut_end && cut_end <= length);
-    uint64_t time_span = timestamps[cut_end - 1] - timestamps[cut_begin];
-    if (time_span == 0) {
-      time_span = 1;
-    }
-    difficulty_type total_work = cumulative_difficulties[cut_end - 1] - cumulative_difficulties[cut_begin];
-    assert(total_work > 0);
-    uint64_t low, high;
-    mul(total_work, target_seconds, low, high);
-    if (high != 0 || low + time_span - 1 < low) {
-      return 0;
-    }
-    return (low + time_span - 1) / time_span;
-  }
-
   void get_cut_location_from_len(size_t length, size_t& cut_begin, size_t& cut_end, size_t REDEF_DIFFICULTY_WINDOW, size_t REDEF_DIFFICULTY_CUT_OLD, size_t REDEF_DIFFICULTY_CUT_LAST)
   {
     if (length <= REDEF_DIFFICULTY_WINDOW)
@@ -237,8 +179,9 @@ namespace currency {
     return res.convert_to<wide_difficulty_type>();
   }
 
-  wide_difficulty_type next_difficulty(vector<uint64_t>& timestamps, vector<wide_difficulty_type>& cumulative_difficulties, size_t target_seconds)
+  wide_difficulty_type next_difficulty_1(vector<uint64_t>& timestamps, vector<wide_difficulty_type>& cumulative_difficulties, size_t target_seconds)
   {
+
     // timestamps  - first is latest, back - is oldest timestamps
     if (timestamps.size() > DIFFICULTY_WINDOW)
     {
@@ -273,6 +216,42 @@ namespace currency {
     if (dif_fast != 0)
     {
       summ += dif_fast;
+      ++devider;
+    }
+    return summ / devider;
+  }
+
+  wide_difficulty_type next_difficulty_2(vector<uint64_t>& timestamps, vector<wide_difficulty_type>& cumulative_difficulties, size_t target_seconds)
+  {
+
+    // timestamps  - first is latest, back - is oldest timestamps
+    if (timestamps.size() > DIFFICULTY_WINDOW)
+    {
+      timestamps.resize(DIFFICULTY_WINDOW);
+      cumulative_difficulties.resize(DIFFICULTY_WINDOW);
+    }
+
+
+    size_t length = timestamps.size();
+    CHECK_AND_ASSERT_MES(length == cumulative_difficulties.size(), 0, "Check \"length == cumulative_difficulties.size()\" failed");
+    if (length <= 1)
+    {
+      return DIFFICULTY_STARTER;
+    }
+    static_assert(DIFFICULTY_WINDOW >= 2, "Window is too small");
+
+    CHECK_AND_ASSERT_MES(length <= DIFFICULTY_WINDOW, 0, "length <= DIFFICULTY_WINDOW check failed, length=" << length);
+
+    sort(timestamps.begin(), timestamps.end(), std::greater<uint64_t>());
+
+    static_assert(2 * DIFFICULTY_CUT <= DIFFICULTY_WINDOW - 2, "Cut length is too large");
+    wide_difficulty_type dif_slow = get_adjustment_for_zone(timestamps, cumulative_difficulties, target_seconds, DIFFICULTY_WINDOW, DIFFICULTY_CUT / 2, DIFFICULTY_CUT / 2);
+    wide_difficulty_type dif_medium = get_adjustment_for_zone(timestamps, cumulative_difficulties, target_seconds, DIFFICULTY_WINDOW / 3, DIFFICULTY_CUT / 8, DIFFICULTY_CUT / 12);
+    uint64_t devider = 1;
+    wide_difficulty_type summ = dif_slow;
+    if (dif_medium != 0)
+    {
+      summ += dif_medium;
       ++devider;
     }
     return summ / devider;
