@@ -11,29 +11,33 @@
         "Zano/src/crypto/tree-hash.c",
         "Zano/src/crypto/crypto.cpp",
         "Zano/src/crypto/crypto-ops.c",
+        "Zano/src/crypto/crypto-sugar.cpp",
+        "Zano/src/crypto/zarcanum.cpp",
+        "Zano/src/crypto/range_proofs.cpp",
         "Zano/src/crypto/crypto-ops-data.c",
         "Zano/src/crypto/hash.c",
         "Zano/src/crypto/keccak.c",
         "Zano/src/common/base58.cpp",
-        "Zano/src/contrib/ethereum/libethash/ethash.cpp",
-        "Zano/src/contrib/ethereum/libethash/keccak.c",
-        "Zano/src/contrib/ethereum/libethash/keccakf800.c",
-        "Zano/src/contrib/ethereum/libethash/progpow.cpp",
-        "Zano/src/contrib/ethereum/libethash/managed.cpp",
+        "Zano/contrib/ethereum/libethash/ethash.cpp",
+        "Zano/contrib/ethereum/libethash/keccak.c",
+        "Zano/contrib/ethereum/libethash/keccakf800.c",
+        "Zano/contrib/ethereum/libethash/progpow.cpp",
+        "Zano/contrib/ethereum/libethash/managed.cpp",
         "Zano/src/currency_core/currency_format_utils_transactions.cpp",
         "Zano/src/currency_core/genesis.cpp",
         "Zano/src/currency_core/genesis_acc.cpp",
         "Zano/src/crypto/random.c",
-        "Zano/src/contrib/ethereum/libethash/keccakf1600.c",
-        "Zano/src/contrib/ethereum/libethash/managed.cpp",
-        "Zano/src/contrib/ethereum/libethash/primes.c"
+        "Zano/contrib/ethereum/libethash/keccakf1600.c",
+        "Zano/contrib/ethereum/libethash/managed.cpp",
+        "Zano/contrib/ethereum/libethash/primes.c"
       ],
       "include_dirs": [
+        "Zano/src/crypto",
         "Zano/src",
-        "Zano/src/contrib",
-        "Zano/src/contrib/epee/include",
-        "Zano/src/contrib/eos_portable_archive",
-        "Zano/src/contrib/ethereum/libethash",
+        "Zano/contrib",
+        "Zano/contrib/epee/include",
+        "Zano/contrib/eos_portable_archive",
+        "Zano/contrib/ethereum/libethash",
         "<!(node -e \"require('nan')\")"
       ],
       "link_settings": {
@@ -51,7 +55,7 @@
         "-fno-rtti"
       ],
       "cflags_cc": [
-        "-std=c++0x",
+        "-std=c++17",
         "-fexceptions",
         "-frtti"
       ],
@@ -69,3 +73,4 @@
     }
   ]
 }
+
