@@ -14,6 +14,11 @@
 #include "currency_core/basic_pow_helpers.h"
 #include <nan.h>
 
+#if BOOST_VERSION < 107500
+  #pragma message("Detected Boost version: " BOOST_LIB_VERSION)
+  #error "Boost version 1.75.0 or newer is required for zano-node-util."
+#endif
+
 #define THROW_ERROR_EXCEPTION(x) Nan::ThrowError(x)
 
 void callback(char* data, void* hint) {
